@@ -99,6 +99,7 @@ export interface FoodRequest {
   foodName: string;
   donorId: string;
   donorOrg: string;
+  donorPhone?: string;
   requesterId: string;
   requesterName: string;
   requesterOrg: string;
@@ -107,6 +108,11 @@ export interface FoodRequest {
   requestedPortions: number;
   pickupTimeEstimate: string;
   notes?: string;
+  imageUrl?: string;
+  location?: string;
+  pickupDeadline?: string;
+  pickupInstructions?: string;
+  category?: FoodCategory;
   status: FoodRequestStatus;
   createdAt: any;
   updatedAt?: any;

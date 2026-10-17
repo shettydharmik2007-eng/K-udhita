@@ -116,7 +116,7 @@ export const Navbar: React.FC<Props> = ({ currentPage, onNavigate }) => {
           {isRequester && (
             <button
               type="button"
-              className={`nav-link panel-link trust-panel-btn ${currentPage === 'my-requests' ? 'active' : ''}`}
+              className={`nav-link panel-link trust-panel-btn ${currentPage === 'my-requests' || currentPage === 'ngo-dashboard' ? 'active' : ''}`}
               onClick={() => handleNav('my-requests')}
             >
               <HeartHandshake size={15} />
@@ -273,7 +273,7 @@ export const Navbar: React.FC<Props> = ({ currentPage, onNavigate }) => {
             {isRequester && (
               <button
                 type="button"
-                className={`mobile-link ${currentPage === 'my-requests' ? 'active' : ''}`}
+                className={`mobile-link ${currentPage === 'my-requests' || currentPage === 'ngo-dashboard' ? 'active' : ''}`}
                 onClick={() => handleNav('my-requests')}
               >
                 <HeartHandshake size={18} />

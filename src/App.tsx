@@ -14,6 +14,7 @@ import { HotelDashboard } from './pages/HotelDashboard';
 import { AddFoodListing } from './pages/AddFoodListing';
 import { EditFoodListing } from './pages/EditFoodListing';
 import { MyRequests } from './pages/MyRequests';
+import { NgoDashboard } from './pages/NgoDashboard';
 import { PartnerDashboard } from './pages/PartnerDashboard';
 import { Login } from './pages/Login';
 import { SignUp } from './pages/SignUp';
@@ -92,7 +93,8 @@ export function AppContent() {
           />
         );
       case 'my-requests':
-        return <MyRequests onNavigate={navigateTo} />;
+      case 'ngo-dashboard':
+        return <NgoDashboard onNavigate={navigateTo} />;
       case 'partner-dashboard':
         return <PartnerDashboard onNavigate={navigateTo} />;
       case 'login':

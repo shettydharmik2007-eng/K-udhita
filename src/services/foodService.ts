@@ -152,6 +152,25 @@ export async function getFoodListings(filters?: {
   return result;
 }
 
+// Fetch only verified surplus listings that meet strict criteria for NGO donation
+export async function getNgoSurplusListings(): Promise<FoodListing[]> {
+  const listings = await getFoodListings();
+  const now = Date.now();
+  return listings.filter((item) => {
+    // 1. Must be available and have remaining quantity > 0
+    const isAvailable = item.status === 'available' && Number(item.remainingQuantityKg) > 0;
+
+    // 2. Must be marked Suitable for Donation (strictly exclude not_suitable and requires_review)
+    const isSuitable = item.foodCondition === 'suitable';
+
+    // 3. Deadline must not have passed
+    const deadlineMs = item.pickupDeadline ? new Date(item.pickupDeadline).getTime() : NaN;
+    const isNotExpired = isNaN(deadlineMs) || deadlineMs > now;
+
+    return isAvailable && isSuitable && isNotExpired;
+  });
+}
+
 export async function getFoodListingById(id: string): Promise<FoodListing | null> {
   if (!isFirebaseConfigured || !db) return null;
   const docRef = doc(db, 'foodListings', id);
@@ -206,6 +225,12 @@ export interface RequestFoodInput {
   requester: UserProfile;
   pickupTimeEstimate: string;
   notes?: string;
+  imageUrl?: string;
+  location?: string;
+  pickupDeadline?: string;
+  pickupInstructions?: string;
+  category?: FoodListing['category'];
+  donorPhone?: string;
 }
 
 // Atomically validates available quantity and records food request using Firestore transaction
@@ -214,25 +239,80 @@ export async function requestFood(input: RequestFoodInput): Promise<string> {
     throw new Error('Firestore is not configured');
   }
 
+  // 1. Role verification: ensure user is a registered requester / NGO
+  if (input.requester.role !== 'requester' && input.requester.role !== 'admin') {
+    throw new Error('Only registered trusts and NGOs can claim surplus food.');
+  }
+
   const requestedKg = Number(input.requestedQuantityKg);
-  if (requestedKg <= 0) {
-    throw new Error('Requested quantity must be greater than 0 kg');
+  if (!requestedKg || requestedKg <= 0) {
+    throw new Error('Requested quantity must be greater than 0 kg.');
   }
 
   const listingRef = doc(db, 'foodListings', input.listingId);
   const requestsCol = collection(db, 'foodRequests');
 
+  // 2. Prevent duplicate active requests by the same NGO for the same listing
+  try {
+    const existingReqQuery = query(
+      requestsCol,
+      where('listingId', '==', input.listingId),
+      where('requesterId', '==', input.requester.uid)
+    );
+    const existingSnap = await withTimeout(
+      getDocs(existingReqQuery),
+      4000,
+      'Duplicate check timed out'
+    );
+    const hasActive = existingSnap.docs.some((d) => {
+      const data = d.data();
+      return data.status === 'pending' || data.status === 'accepted';
+    });
+    if (hasActive) {
+      throw new Error(
+        'Your organization already has an active claim (Pending or Approved) for this food listing. Please check "My Requests".'
+      );
+    }
+  } catch (err: any) {
+    if (err.message && err.message.includes('already has an active claim')) {
+      throw err;
+    }
+    console.warn('Duplicate check warning, proceeding to atomic transaction:', err);
+  }
+
   const result = await runTransaction(db, async (transaction) => {
     const listingSnap = await transaction.get(listingRef);
     if (!listingSnap.exists()) {
-      throw new Error('Listing does not exist');
+      throw new Error('Food listing not found or has been removed.');
     }
 
     const listingData = listingSnap.data() as FoodListing;
     const currentRemaining = Number(listingData.remainingQuantityKg);
 
+    // Verify listing is available
     if (listingData.status !== 'available' && listingData.status !== 'reserved') {
-      throw new Error(`This listing is currently ${listingData.status} and cannot be requested.`);
+      throw new Error(`This listing is currently ${listingData.status.replace('_', ' ')} and cannot be requested.`);
+    }
+
+    // Suitability check: never allow not_suitable or requires_review for NGO claims
+    if (listingData.foodCondition === 'not_suitable') {
+      throw new Error('This food listing is marked Not Suitable for Donation and cannot be claimed.');
+    }
+    if (listingData.foodCondition === 'requires_review') {
+      throw new Error('This food listing requires kitchen safety review before it can be donated.');
+    }
+
+    // Deadline check: pickup deadline must not have passed
+    if (listingData.pickupDeadline) {
+      const deadlineMs = new Date(listingData.pickupDeadline).getTime();
+      if (!isNaN(deadlineMs) && deadlineMs <= Date.now()) {
+        throw new Error('The pickup deadline for this food listing has already expired.');
+      }
+    }
+
+    // Quantity check
+    if (currentRemaining <= 0) {
+      throw new Error('This food listing has already been completely claimed by another partner.');
     }
 
     if (requestedKg > currentRemaining) {
@@ -241,10 +321,10 @@ export async function requestFood(input: RequestFoodInput): Promise<string> {
       );
     }
 
-    const newRemaining = Math.max(0, currentRemaining - requestedKg);
+    const newRemaining = Math.max(0, Math.round((currentRemaining - requestedKg) * 100) / 100);
     const newStatus = newRemaining === 0 ? 'reserved' : 'available';
 
-    // Update listing remaining quantity
+    // Update listing remaining quantity and status atomically
     transaction.update(listingRef, {
       remainingQuantityKg: newRemaining,
       status: newStatus,
@@ -258,14 +338,20 @@ export async function requestFood(input: RequestFoodInput): Promise<string> {
       foodName: listingData.foodName,
       donorId: listingData.donorId,
       donorOrg: listingData.donorOrg,
+      donorPhone: listingData.donorPhone || input.donorPhone || '',
       requesterId: input.requester.uid,
       requesterName: input.requester.name,
       requesterOrg: input.requester.organizationName,
       requesterPhone: input.requester.phone || '',
       requestedQuantityKg: requestedKg,
-      requestedPortions: Number(input.requestedPortions) || 1,
-      pickupTimeEstimate: input.pickupTimeEstimate,
+      requestedPortions: Number(input.requestedPortions) || Math.max(1, Math.round(requestedKg * 3)),
+      pickupTimeEstimate: input.pickupTimeEstimate || 'Within pickup window',
       notes: input.notes || '',
+      imageUrl: listingData.imageUrl || input.imageUrl || '',
+      location: listingData.location || input.location || '',
+      pickupDeadline: listingData.pickupDeadline || input.pickupDeadline || '',
+      pickupInstructions: listingData.pickupInstructions || input.pickupInstructions || '',
+      category: listingData.category || input.category || 'other',
       status: 'pending',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -327,18 +413,46 @@ export async function updateRequestStatus(
       throw new Error('Not authorized to update this request');
     }
 
-    // If cancelled or rejected, release the quantity back to the listing
-    if ((newStatus === 'rejected' || newStatus === 'cancelled') && reqData.status === 'pending') {
+    // A completed request cannot be reactivated
+    if (reqData.status === 'completed') {
+      throw new Error('A completed request cannot be modified or reactivated.');
+    }
+
+    // If cancelled or rejected from pending or accepted, release the quantity back to the listing
+    if (
+      (newStatus === 'rejected' || newStatus === 'cancelled') &&
+      (reqData.status === 'pending' || reqData.status === 'accepted')
+    ) {
       const listingRef = doc(db!, 'foodListings', reqData.listingId);
       const listingSnap = await transaction.get(listingRef);
       if (listingSnap.exists()) {
         const listing = listingSnap.data() as FoodListing;
-        const restoredRemaining = Number(listing.remainingQuantityKg) + Number(reqData.requestedQuantityKg);
+        const currentRemaining = Number(listing.remainingQuantityKg) || 0;
+        const initialQty = Number(listing.initialQuantityKg) || currentRemaining;
+        const restoredRemaining = Math.min(
+          initialQty,
+          Math.round((currentRemaining + Number(reqData.requestedQuantityKg)) * 100) / 100
+        );
         transaction.update(listingRef, {
           remainingQuantityKg: restoredRemaining,
           status: 'available',
           updatedAt: serverTimestamp(),
         });
+      }
+    }
+
+    // If marked completed, check if listing should also be marked completed if all portions taken
+    if (newStatus === 'completed') {
+      const listingRef = doc(db!, 'foodListings', reqData.listingId);
+      const listingSnap = await transaction.get(listingRef);
+      if (listingSnap.exists()) {
+        const listing = listingSnap.data() as FoodListing;
+        if (Number(listing.remainingQuantityKg) === 0 && listing.status === 'reserved') {
+          transaction.update(listingRef, {
+            status: 'completed',
+            updatedAt: serverTimestamp(),
+          });
+        }
       }
     }
 
