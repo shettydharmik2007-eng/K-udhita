@@ -17,6 +17,21 @@ import type {
   WasteCategory,
 } from '../types';
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(timeoutMessage);
+      (err as any).code = 'firestore/timeout';
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 export interface CreateWasteInput {
   foodName: string;
   category: WasteCategory;
@@ -66,7 +81,11 @@ export async function getWasteCollections(filters?: {
     q = query(wasteCol, where('status', '==', filters.status));
   }
 
-  const snapshot = await getDocs(q);
+  const snapshot = await withTimeout(
+    getDocs(q),
+    5000,
+    'Waste collections query timed out after 5 seconds.'
+  );
   let list: WasteCollection[] = snapshot.docs.map((d) => ({
     id: d.id,
     ...(d.data() as Omit<WasteCollection, 'id'>),

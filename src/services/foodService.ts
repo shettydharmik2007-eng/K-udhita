@@ -22,6 +22,21 @@ import type {
   WasteCategory,
 } from '../types';
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(timeoutMessage);
+      (err as any).code = 'firestore/timeout';
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 export async function uploadFoodImage(file: File): Promise<string> {
   if (!isFirebaseConfigured || !storage) {
     throw new Error('Firebase Storage is not configured. Please complete setup in .env');
@@ -78,7 +93,11 @@ export async function getFoodListings(filters?: {
     q = query(listingsCol, where('status', '==', filters.status));
   }
 
-  const snapshot = await getDocs(q);
+  const snapshot = await withTimeout(
+    getDocs(q),
+    5000,
+    'Listing query timed out after 5 seconds.'
+  );
   const listings: FoodListing[] = snapshot.docs.map((d) => ({
     id: d.id,
     ...(d.data() as Omit<FoodListing, 'id'>),
@@ -239,7 +258,11 @@ export async function getFoodRequests(filters: {
     q = query(requestsCol, where('listingId', '==', filters.listingId));
   }
 
-  const snapshot = await getDocs(q);
+  const snapshot = await withTimeout(
+    getDocs(q),
+    5000,
+    'Food requests query timed out after 5 seconds.'
+  );
   return snapshot.docs.map((d) => ({
     id: d.id,
     ...(d.data() as Omit<FoodRequest, 'id'>),

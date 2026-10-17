@@ -35,30 +35,69 @@ export const Login: React.FC<Props> = ({ onNavigate }) => {
     }
 
     setLoading(true);
+    const flowStartTime = performance.now();
+    console.group(`[Kṣudhita Login Flow] Started at ${new Date().toLocaleTimeString()}`);
+    console.log('[Login Flow] Target email:', email.trim());
+
     try {
+      // Step 1 & 2: Firebase Authentication & Firestore Profile Fetch
+      console.time('[Login Flow] 1. Authentication & Profile Retrieval');
       const profile = await signInUser(email.trim(), password);
+      console.timeEnd('[Login Flow] 1. Authentication & Profile Retrieval');
+
+      // Step 3: Context & Role Synchronization
+      console.time('[Login Flow] 2. State & Role Synchronization');
       await refreshProfile(profile);
+      console.timeEnd('[Login Flow] 2. State & Role Synchronization');
+
+      // Step 4: Role-Based Dashboard Navigation
+      console.time('[Login Flow] 3. Dashboard Navigation');
       showNotification('success', 'Signed In', `Welcome back to Kṣudhita, ${profile.name}!`);
 
-      // Route directly to the user's specific dedicated panel
-      if (profile.role === 'donor') {
+      const targetRole = profile.role || 'requester';
+      console.log(`[Login Flow] User authenticated with role "${targetRole}". Navigating to panel...`);
+
+      if (targetRole === 'donor') {
         onNavigate('hotel-dashboard');
-      } else if (profile.role === 'waste_partner') {
+      } else if (targetRole === 'waste_partner') {
         onNavigate('partner-dashboard');
       } else {
         onNavigate('my-requests');
       }
+      console.timeEnd('[Login Flow] 3. Dashboard Navigation');
+      console.log(`[Login Flow] Total duration: ${(performance.now() - flowStartTime).toFixed(1)}ms`);
     } catch (err: any) {
-      console.error('Sign in failed:', err);
-      let msg = err.message || 'Failed to sign in. Please check your credentials.';
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
-        msg = 'Invalid email or password. Please try again.';
-      } else if (err.code === 'auth/user-not-found') {
-        msg = 'No registered account found with this email.';
+      console.error('[Login Flow] Sign in process failed:', err);
+      let msg = err?.message || 'Failed to sign in. Please check your credentials.';
+
+      if (err?.code === 'auth/invalid-credential' || err?.code === 'auth/wrong-password') {
+        msg = 'Invalid email or password. Please verify and try again.';
+      } else if (err?.code === 'auth/user-not-found') {
+        msg = 'No registered account found with this email. Please register first.';
+      } else if (err?.code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
+      } else if (err?.code === 'auth/network-request-failed') {
+        msg = 'Network connection failed. Please check your internet connection.';
+      } else if (
+        err?.code === 'firestore/profile-timeout' ||
+        err?.code === 'firestore/timeout' ||
+        msg.includes('timed out')
+      ) {
+        msg = 'Sign-in timed out while retrieving your user profile. Please check your internet connection or verify Cloud Firestore status in Firebase Console.';
+      } else if (
+        err?.code === 'firestore/permission-denied' ||
+        err?.code === 'permission-denied' ||
+        msg.includes('Cloud Firestore API has not been used') ||
+        msg.includes('PERMISSION_DENIED')
+      ) {
+        msg = 'Cloud Firestore Database is not active in this Firebase project. Please enable it in Firebase Console (Build → Firestore Database → Create database).';
       }
+
       setErrorMessage(msg);
       showNotification('error', 'Sign In Failed', msg);
     } finally {
+      console.groupEnd();
+      // Ensure loading state is unconditionally reset so button never stays stuck
       setLoading(false);
     }
   };

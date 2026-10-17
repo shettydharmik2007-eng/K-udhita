@@ -127,18 +127,55 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
   return profileData;
 }
 
+const inFlightProfileFetches = new Map<string, Promise<UserProfile | null>>();
+
 export async function signInUser(email: string, password: string): Promise<UserProfile> {
   if (!isFirebaseConfigured || !auth || !db) {
     throw new Error('Firebase is not configured. Please complete the setup with your credentials.');
   }
 
   const cleanEmail = email.trim();
-  const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-  const user = userCredential.user;
+  console.log('[Auth Service] Starting sign-in for:', cleanEmail);
 
-  const profile = await getUserProfile(user.uid);
+  // 1. Firebase Authentication with 6s timeout
+  console.time('[Auth Service] 1. Firebase Auth (signInWithEmailAndPassword)');
+  let user: FirebaseUser;
+  try {
+    const userCredential = await withTimeout(
+      signInWithEmailAndPassword(auth, cleanEmail, password),
+      6000,
+      'Firebase Authentication request timed out after 6 seconds. Please check your network connection.'
+    );
+    user = userCredential.user;
+    console.timeEnd('[Auth Service] 1. Firebase Auth (signInWithEmailAndPassword)');
+    console.log('[Auth Service] Firebase Auth successful. Authenticated UID:', user.uid);
+  } catch (authErr: any) {
+    console.timeEnd('[Auth Service] 1. Firebase Auth (signInWithEmailAndPassword)');
+    console.error('[Auth Service] Firebase Authentication failed:', authErr);
+    throw authErr;
+  }
+
+  // 2. Fetch User Profile from Firestore with 4.5s timeout
+  console.time('[Auth Service] 2. Firestore Profile Lookup');
+  let profile: UserProfile | null = null;
+  try {
+    profile = await getUserProfile(user.uid, 4500);
+    console.timeEnd('[Auth Service] 2. Firestore Profile Lookup');
+  } catch (profileErr: any) {
+    console.timeEnd('[Auth Service] 2. Firestore Profile Lookup');
+    console.error('[Auth Service] Profile lookup failed. Signing out to prevent unverified session:', profileErr);
+    try {
+      await signOut(auth);
+    } catch (soErr) {
+      console.warn('[Auth Service] Sign out cleanup failed:', soErr);
+    }
+    // Strict requirement: Never treat a timeout or profile error as a successful login
+    throw profileErr;
+  }
+
+  // 3. Handle rare case where Auth user exists but Firestore profile document does not
   if (!profile) {
-    // If profile document doesn't exist, create default fallback
+    console.warn('[Auth Service] Profile document does not exist for UID:', user.uid, '- Initializing fallback profile');
     const fallbackProfile: UserProfile = {
       uid: user.uid,
       email: user.email || cleanEmail,
@@ -150,17 +187,24 @@ export async function signInUser(email: string, password: string): Promise<UserP
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
+
     try {
       await withTimeout(
         setDoc(doc(db, 'users', user.uid), fallbackProfile, { merge: true }),
-        8000,
-        'Firestore write timed out'
+        4000,
+        'Timed out while initializing user profile in Cloud Firestore.'
       );
-    } catch (fsErr) {
-      console.warn('Could not save fallback profile to Firestore:', fsErr);
+      profile = fallbackProfile;
+    } catch (fsErr: any) {
+      console.error('[Auth Service] Failed to initialize fallback profile:', fsErr);
+      try {
+        await signOut(auth);
+      } catch {}
+      throw fsErr;
     }
-    return fallbackProfile;
   }
+
+  console.log('[Auth Service] Login flow completed. User role:', profile.role);
   return profile;
 }
 
@@ -170,22 +214,65 @@ export async function signOutUser(): Promise<void> {
   }
 }
 
-export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+export async function getUserProfile(uid: string, timeoutMs: number = 4500): Promise<UserProfile | null> {
   if (!db) return null;
-  try {
-    const userDoc = await withTimeout(
-      getDoc(doc(db, 'users', uid)),
-      8000,
-      'Firestore read timed out'
-    );
-    if (userDoc.exists()) {
-      return userDoc.data() as UserProfile;
-    }
-    return null;
-  } catch (err) {
-    console.warn('Failed to load user profile from Firestore:', err);
-    return null;
+
+  // Deduplicate in-flight requests for the same UID to prevent concurrent duplicate reads
+  if (inFlightProfileFetches.has(uid)) {
+    console.log(`[Firestore] Reusing in-flight profile fetch for users/${uid}`);
+    return inFlightProfileFetches.get(uid)!;
   }
+
+  const fetchPromise = (async () => {
+    console.time(`[Firestore] getDoc users/${uid}`);
+    try {
+      const userDoc = await withTimeout(
+        getDoc(doc(db, 'users', uid)),
+        timeoutMs,
+        `Cloud Firestore profile lookup for "${uid}" timed out after ${timeoutMs}ms.`
+      );
+      console.timeEnd(`[Firestore] getDoc users/${uid}`);
+
+      if (userDoc.exists()) {
+        const data = userDoc.data() as UserProfile;
+        console.log(`[Firestore] Document users/${uid} found. Role:`, data.role);
+        return data;
+      }
+
+      console.warn(`[Firestore] Document users/${uid} does not exist in Firestore.`);
+      return null;
+    } catch (err: any) {
+      console.timeEnd(`[Firestore] getDoc users/${uid}`);
+      console.error(`[Firestore] Error loading users/${uid}:`, err);
+
+      let errorMsg = err?.message || 'Failed to load user profile from Firestore.';
+      let errorCode = err?.code || 'firestore/error';
+
+      if (err?.code === 'firestore/timeout' || errorMsg.includes('timed out')) {
+        errorMsg = 'Cloud Firestore profile lookup timed out. Please check your internet connection or Firestore settings.';
+        errorCode = 'firestore/profile-timeout';
+      } else if (
+        err?.code === 'permission-denied' ||
+        errorMsg.includes('Cloud Firestore API has not been used') ||
+        errorMsg.includes('PERMISSION_DENIED')
+      ) {
+        errorMsg = 'Cloud Firestore Database is not enabled or permission was denied. Please create the database in Firebase Console.';
+        errorCode = 'firestore/permission-denied';
+      } else if (err?.code === 'unavailable' || errorMsg.includes('offline')) {
+        errorMsg = 'Cloud Firestore is currently unreachable. Please check your internet connection.';
+        errorCode = 'firestore/unavailable';
+      }
+
+      const enhancedErr: any = new Error(errorMsg);
+      enhancedErr.code = errorCode;
+      throw enhancedErr;
+    }
+  })().finally(() => {
+    inFlightProfileFetches.delete(uid);
+  });
+
+  inFlightProfileFetches.set(uid, fetchPromise);
+  return fetchPromise;
 }
 
 export async function updateUserProfile(
@@ -198,7 +285,7 @@ export async function updateUserProfile(
       ...updates,
       updatedAt: serverTimestamp(),
     }),
-    8000,
+    5000,
     'Failed to update profile: Firestore timed out'
   );
 }
