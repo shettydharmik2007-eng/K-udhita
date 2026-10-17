@@ -68,6 +68,8 @@ export const Login: React.FC<Props> = ({ onNavigate }) => {
       console.log(`[Login Flow] Total duration: ${(performance.now() - flowStartTime).toFixed(1)}ms`);
     } catch (err: any) {
       console.error('[Login Flow] Sign in process failed:', err);
+      console.error('[Login Flow] Original Firebase Error Code:', err?.code);
+      console.error('[Login Flow] Original Firebase Error Message:', err?.message);
       let msg = err?.message || 'Failed to sign in. Please check your credentials.';
 
       if (err?.code === 'auth/invalid-credential' || err?.code === 'auth/wrong-password') {
@@ -78,19 +80,6 @@ export const Login: React.FC<Props> = ({ onNavigate }) => {
         msg = 'Please enter a valid email address.';
       } else if (err?.code === 'auth/network-request-failed') {
         msg = 'Network connection failed. Please check your internet connection.';
-      } else if (
-        err?.code === 'firestore/profile-timeout' ||
-        err?.code === 'firestore/timeout' ||
-        msg.includes('timed out')
-      ) {
-        msg = 'Sign-in timed out while retrieving your user profile. Please check your internet connection or verify Cloud Firestore status in Firebase Console.';
-      } else if (
-        err?.code === 'firestore/permission-denied' ||
-        err?.code === 'permission-denied' ||
-        msg.includes('Cloud Firestore API has not been used') ||
-        msg.includes('PERMISSION_DENIED')
-      ) {
-        msg = 'Cloud Firestore Database is not active in this Firebase project. Please enable it in Firebase Console (Build → Firestore Database → Create database).';
       }
 
       setErrorMessage(msg);

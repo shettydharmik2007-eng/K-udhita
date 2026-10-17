@@ -87,7 +87,9 @@ export const SignUp: React.FC<Props> = ({ onNavigate }) => {
         onNavigate('my-requests');
       }
     } catch (err: any) {
-      console.error('Registration failed:', err);
+      console.error('[Registration Flow] Registration failed:', err);
+      console.error('[Registration Flow] Original Firebase Error Code:', err?.code);
+      console.error('[Registration Flow] Original Firebase Error Message:', err?.message);
       let msg = err?.message || 'Registration failed. Please try again.';
       if (err?.code === 'auth/email-already-in-use') {
         msg = 'An account with this email address already exists. If this is your account, please sign in with your password.';
@@ -97,13 +99,6 @@ export const SignUp: React.FC<Props> = ({ onNavigate }) => {
         msg = 'The email address is invalid. Please verify and try again.';
       } else if (err?.code === 'auth/network-request-failed') {
         msg = 'Network connection error. Please verify your internet connection.';
-      } else if (
-        err?.code === 'firestore/timeout' ||
-        err?.code === 'permission-denied' ||
-        msg.includes('Cloud Firestore') ||
-        msg.includes('PERMISSION_DENIED')
-      ) {
-        msg = err.message || 'Cloud Firestore Database is not enabled. Please open Firebase Console → Firestore Database and click "Create database".';
       }
       setErrorMessage(msg);
       showNotification('error', 'Registration Error', msg);

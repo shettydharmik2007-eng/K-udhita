@@ -26,15 +26,88 @@ export interface SignUpParams {
 }
 
 /**
- * Wraps a promise with a timeout to avoid hanging indefinitely
- * when Firestore is offline, disabled, or uninitialized.
+ * Probes the Firestore REST endpoint to extract the authentic Google Cloud / Firebase
+ * error code and message when a write or read does not resolve.
  */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+export async function getFirestoreBackendDiagnostics(): Promise<{ code: string; message: string } | null> {
+  const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
+  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+
+  if (!apiKey || !projectId) {
+    return {
+      code: 'CONFIG_MISSING',
+      message: 'Firebase configuration (VITE_FIREBASE_API_KEY or VITE_FIREBASE_PROJECT_ID) is missing in .env.',
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users?key=${apiKey}`;
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      if (data?.error) {
+        const errCode = data.error.status || `HTTP_${data.error.code}`;
+        const errMsg = data.error.message || `Firestore returned HTTP status ${response.status}`;
+        console.error('[Firebase Original Error Code]:', errCode);
+        console.error('[Firebase Original Error Message]:', errMsg);
+        console.error('[Firebase Error Details]:', data.error);
+        return {
+          code: errCode,
+          message: errMsg,
+        };
+      }
+      const genericMsg = `Firestore endpoint returned HTTP ${response.status}: ${response.statusText}`;
+      console.error('[Firebase Original Error Code]:', `HTTP_${response.status}`);
+      console.error('[Firebase Original Error Message]:', genericMsg);
+      return {
+        code: `HTTP_${response.status}`,
+        message: genericMsg,
+      };
+    }
+    return null;
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return {
+        code: 'PROBE_TIMEOUT',
+        message: 'Network request to Cloud Firestore backend timed out.',
+      };
+    }
+    return {
+      code: 'NETWORK_ERROR',
+      message: err?.message || 'Network connectivity error reaching Firestore.',
+    };
+  }
+}
+
+/**
+ * Wraps a promise with a timeout to avoid hanging indefinitely.
+ * When the timeout fires, it actively probes the Firestore backend
+ * to capture and log the original Firebase/Google error code and message.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, defaultTimeoutMessage: string): Promise<T> {
   let timer: any;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      const err = new Error(timeoutMessage);
-      (err as any).code = 'firestore/timeout';
+    timer = setTimeout(async () => {
+      try {
+        const diag = await getFirestoreBackendDiagnostics();
+        if (diag) {
+          console.error(`[Firestore Operation Failed] Code: ${diag.code} - ${diag.message}`);
+          const err: any = new Error(`[${diag.code}] ${diag.message}`);
+          err.code = diag.code;
+          err.originalMessage = diag.message;
+          reject(err);
+          return;
+        }
+      } catch {}
+
+      console.error('[Firestore Operation Failed] Code: firestore/timeout -', defaultTimeoutMessage);
+      const err: any = new Error(defaultTimeoutMessage);
+      err.code = 'firestore/timeout';
       reject(err);
     }, timeoutMs);
   });
@@ -106,22 +179,9 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
       'Cloud Firestore timed out while saving your profile. Please ensure Cloud Firestore Database is enabled in Firebase Console (Build → Firestore Database → Create database).'
     );
   } catch (fsErr: any) {
-    console.error('Firestore user profile write failed:', fsErr);
-    let msg = fsErr?.message || 'Failed to create user profile in Firestore.';
-    if (
-      fsErr?.code === 'permission-denied' ||
-      msg.includes('Cloud Firestore API has not been used') ||
-      msg.includes('PERMISSION_DENIED')
-    ) {
-      msg =
-        'Cloud Firestore Database is not enabled in your Firebase project. Please open Firebase Console → Firestore Database and click "Create database", then try again.';
-    } else if (fsErr?.code === 'unavailable' || msg.includes('offline')) {
-      msg =
-        'Could not reach Cloud Firestore. Please verify that your Firestore database is active in Firebase Console and check your internet connection.';
-    }
-    const enhancedErr: any = new Error(msg);
-    enhancedErr.code = fsErr?.code || 'firestore/write-failed';
-    throw enhancedErr;
+    console.error('[Firestore SignUp Write Error] Code:', fsErr?.code);
+    console.error('[Firestore SignUp Write Error] Message:', fsErr?.message);
+    throw fsErr;
   }
 
   return profileData;
@@ -243,29 +303,9 @@ export async function getUserProfile(uid: string, timeoutMs: number = 4500): Pro
       return null;
     } catch (err: any) {
       console.timeEnd(`[Firestore] getDoc users/${uid}`);
-      console.error(`[Firestore] Error loading users/${uid}:`, err);
-
-      let errorMsg = err?.message || 'Failed to load user profile from Firestore.';
-      let errorCode = err?.code || 'firestore/error';
-
-      if (err?.code === 'firestore/timeout' || errorMsg.includes('timed out')) {
-        errorMsg = 'Cloud Firestore profile lookup timed out. Please check your internet connection or Firestore settings.';
-        errorCode = 'firestore/profile-timeout';
-      } else if (
-        err?.code === 'permission-denied' ||
-        errorMsg.includes('Cloud Firestore API has not been used') ||
-        errorMsg.includes('PERMISSION_DENIED')
-      ) {
-        errorMsg = 'Cloud Firestore Database is not enabled or permission was denied. Please create the database in Firebase Console.';
-        errorCode = 'firestore/permission-denied';
-      } else if (err?.code === 'unavailable' || errorMsg.includes('offline')) {
-        errorMsg = 'Cloud Firestore is currently unreachable. Please check your internet connection.';
-        errorCode = 'firestore/unavailable';
-      }
-
-      const enhancedErr: any = new Error(errorMsg);
-      enhancedErr.code = errorCode;
-      throw enhancedErr;
+      console.error(`[Firestore Profile Fetch Error] Code:`, err?.code);
+      console.error(`[Firestore Profile Fetch Error] Message:`, err?.message);
+      throw err;
     }
   })().finally(() => {
     inFlightProfileFetches.delete(uid);
