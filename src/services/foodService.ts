@@ -16,6 +16,7 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage, isFirebaseConfigured } from './firebase';
 import type {
   FoodListing,
+  FoodListingStatus,
   FoodRequest,
   FoodRequestStatus,
   UserProfile,
@@ -39,22 +40,41 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 
 export async function uploadFoodImage(file: File): Promise<string> {
   if (!isFirebaseConfigured || !storage) {
-    throw new Error('Firebase Storage is not configured. Please complete setup in .env');
+    // If Firebase Storage is not configured in .env, gracefully fallback to Base64 data URL
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
   }
 
-  // Generate safe unique filename
-  const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-  const storageRef = ref(storage, `foodListings/${Date.now()}_${cleanName}`);
-  const snapshot = await uploadBytes(storageRef, file, {
-    contentType: file.type,
-  });
-  return await getDownloadURL(snapshot.ref);
+  try {
+    // Generate safe unique filename
+    const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const storageRef = ref(storage, `foodListings/${Date.now()}_${cleanName}`);
+    const snapshot = await uploadBytes(storageRef, file, {
+      contentType: file.type,
+    });
+    return await getDownloadURL(snapshot.ref);
+  } catch (err) {
+    console.warn('Firebase Storage upload failed, falling back to local image data:', err);
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
+  }
 }
 
 export type CreateFoodListingInput = Omit<
   FoodListing,
   'id' | 'createdAt' | 'updatedAt' | 'remainingQuantityKg' | 'status'
->;
+> & {
+  remainingQuantityKg?: number;
+  status?: FoodListingStatus;
+};
 
 export async function createFoodListing(
   input: CreateFoodListingInput
@@ -64,11 +84,28 @@ export async function createFoodListing(
   }
 
   const listingsCol = collection(db, 'foodListings');
+
+  // Determine standard kg quantity from direct weight entry
+  let standardKg = Number(input.initialQuantityKg);
+  if (input.recordedWeight && input.weightUnit) {
+    standardKg = input.weightUnit === 'g' ? Number(input.recordedWeight) / 1000 : Number(input.recordedWeight);
+  }
+  if (!standardKg || standardKg <= 0) {
+    throw new Error('Food weight must be greater than zero.');
+  }
+
+  // Estimated portions (defaults to ~3 portions per kg if not specified)
+  const portionsCount = Number(input.portions) > 0 ? Number(input.portions) : Math.max(1, Math.round(standardKg * 3));
+
   const docRef = await addDoc(listingsCol, {
     ...input,
-    initialQuantityKg: Number(input.initialQuantityKg),
-    remainingQuantityKg: Number(input.initialQuantityKg),
-    portions: Number(input.portions),
+    initialQuantityKg: standardKg,
+    remainingQuantityKg: standardKg,
+    portions: portionsCount,
+    recordedWeight: input.recordedWeight ? Number(input.recordedWeight) : standardKg,
+    weightUnit: input.weightUnit || 'kg',
+    measurementMethod: input.measurementMethod || 'digital_scale',
+    foodCondition: input.foodCondition || 'suitable',
     status: 'available',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

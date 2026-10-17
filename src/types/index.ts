@@ -13,6 +13,12 @@ export interface UserProfile {
 }
 
 export type FoodCategory =
+  | 'rice_pulao'
+  | 'curries_dal'
+  | 'roti_bread'
+  | 'snacks_starters'
+  | 'sweets_desserts'
+  | 'fruits_salad_others'
   | 'cooked_meals'
   | 'bakery'
   | 'raw_produce'
@@ -23,14 +29,28 @@ export type FoodCategory =
 
 export type DietaryType = 'veg' | 'non-veg' | 'vegan';
 
-export type StorageCondition = 'refrigerated' | 'hot_holding' | 'room_temp';
+export type StorageCondition =
+  | 'hot_holding'    // Kept Hot
+  | 'refrigerated'   // Refrigerated
+  | 'room_temp'      // Room Temperature
+  | 'other';         // Other
+
+export type FoodCondition =
+  | 'suitable'         // Suitable for Donation
+  | 'not_suitable'     // Not Suitable for Donation
+  | 'requires_review'; // Requires Review
+
+export type WeightUnit = 'kg' | 'g';
+export type WeightMeasurementMethod = 'digital_scale' | 'manual_estimate';
 
 export type FoodListingStatus =
   | 'available'
   | 'reserved'
   | 'completed'
   | 'expired'
-  | 'transferred_to_waste';
+  | 'overdue'
+  | 'transferred_to_waste'
+  | 'cancelled';
 
 export interface FoodListing {
   id: string;
@@ -44,10 +64,21 @@ export interface FoodListing {
   initialQuantityKg: number;
   remainingQuantityKg: number;
   portions: number;
+
+  // Direct Weight Entry
+  recordedWeight?: number;
+  weightUnit?: WeightUnit;
+  measurementMethod?: WeightMeasurementMethod;
+
+  // Dates & Timestamps
+  prepDate?: string;
   prepTime: string;
   pickupDeadline: string;
+
   location: string;
+  pickupInstructions?: string;
   storageCondition: StorageCondition;
+  foodCondition?: FoodCondition;
   description: string;
   imageUrl: string;
   status: FoodListingStatus;

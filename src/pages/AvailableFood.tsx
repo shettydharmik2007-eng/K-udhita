@@ -83,7 +83,9 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
         selectedDietary === 'all' || item.dietaryType === selectedDietary;
 
       const isAvailable =
-        item.status === 'available' && Number(item.remainingQuantityKg) > 0;
+        item.status === 'available' &&
+        Number(item.remainingQuantityKg) > 0 &&
+        item.foodCondition !== 'not_suitable';
 
       return matchesSearch && matchesCategory && matchesDietary && isAvailable;
     })

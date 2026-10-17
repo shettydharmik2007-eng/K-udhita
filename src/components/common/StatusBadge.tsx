@@ -16,6 +16,7 @@ export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
       case 'completed':
         return 'badge-primary';
       case 'expired':
+      case 'overdue':
         return 'badge-danger';
       case 'transferred_to_waste':
         return 'badge-waste';
@@ -28,6 +29,12 @@ export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
       case 'rejected':
       case 'cancelled':
         return 'badge-danger';
+      case 'suitable':
+        return 'badge-success';
+      case 'not_suitable':
+        return 'badge-danger';
+      case 'requires_review':
+        return 'badge-warning';
       default:
         return 'badge-neutral';
     }
@@ -43,6 +50,8 @@ export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
         return 'Completed';
       case 'expired':
         return 'Expired';
+      case 'overdue':
+        return 'Overdue (Review Required)';
       case 'transferred_to_waste':
         return 'Routed to Waste';
       case 'pending':
@@ -55,6 +64,12 @@ export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
         return 'Declined';
       case 'cancelled':
         return 'Cancelled';
+      case 'suitable':
+        return 'Suitable for Donation';
+      case 'not_suitable':
+        return 'Not Suitable for Donation';
+      case 'requires_review':
+        return 'Requires Review';
       default:
         return status;
     }
