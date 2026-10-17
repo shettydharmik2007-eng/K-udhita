@@ -82,10 +82,14 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
       const matchesDietary =
         selectedDietary === 'all' || item.dietaryType === selectedDietary;
 
+      const deadlineMs = item.pickupDeadline ? new Date(item.pickupDeadline).getTime() : NaN;
+      const isNotExpired = isNaN(deadlineMs) || deadlineMs > Date.now();
+
       const isAvailable =
         item.status === 'available' &&
         Number(item.remainingQuantityKg) > 0 &&
-        item.foodCondition !== 'not_suitable';
+        item.foodCondition === 'suitable' &&
+        isNotExpired;
 
       return matchesSearch && matchesCategory && matchesDietary && isAvailable;
     })

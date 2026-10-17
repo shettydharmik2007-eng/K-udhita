@@ -79,13 +79,16 @@ export async function fetchLiveImpactMetrics(): Promise<ImpactMetrics> {
     let completedWasteCount = 0;
 
     wasteList.forEach((w) => {
-      const qty = Number(w.quantityKg) || 0;
-      if (w.category === 'composting') {
-        wasteCompostingKg += qty;
-      } else if (w.category === 'biogas') {
-        wasteBiogasKg += qty;
-      }
-      if (w.status === 'completed' || w.status === 'collected') {
+      const isCollected = ['collected', 'processing', 'processed', 'completed'].includes(w.status);
+      if (isCollected) {
+        const qty = Number(w.actualCollectedKg ?? w.quantityKg) || 0;
+        const method = (w.processingMethod || w.destinationFacility || w.category || '').toLowerCase();
+        if (method.includes('biogas') || w.category === 'biogas') {
+          wasteBiogasKg += qty;
+        } else {
+          // composting, vermicomposting, soil enrichment, animal feed, etc.
+          wasteCompostingKg += qty;
+        }
         completedWasteCount++;
       }
     });
