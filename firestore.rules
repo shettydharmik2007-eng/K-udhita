@@ -39,12 +39,11 @@ service cloud.firestore {
         && data.uid == userId
         && isValidRole(data.role)
         && hasValidUserFields()
-        && (!('uid' in resource.data) || data.uid == resource.data.uid)
-        && (!('createdAt' in resource.data) || data.createdAt == resource.data.createdAt);
+        && (!('uid' in resource.data) || data.uid == resource.data.uid);
     }
 
     // Users collection
-    // Authenticated users can create and read ONLY their own profile (request.auth.uid == userId)
+    // Authenticated users can create, update, and read ONLY their own profile (request.auth.uid == userId)
     match /users/{userId} {
       allow read: if isOwner(userId);
       allow create: if isValidUserProfileCreate(userId);
@@ -54,15 +53,36 @@ service cloud.firestore {
 
     // Food Listings collection
     // Publicly readable so communities can view available leftover food
-    // Only authenticated donors can create; only the listing creator can update or delete
+    // Only authenticated donors can create listings for their own account
+    // Updates are allowed ONLY to the listing owner, or during an authorized request transaction
     match /foodListings/{listingId} {
       allow read: if true;
-      allow create: if isAuthenticated() && request.resource.data.donorId == request.auth.uid;
-      // Listing owner can update full listing; requesters can update remainingQuantityKg during request transaction
+      allow create: if isAuthenticated()
+        && request.resource.data.donorId == request.auth.uid
+        && request.resource.data.status == 'available'
+        && request.resource.data.initialQuantityKg is number
+        && request.resource.data.initialQuantityKg > 0
+        && request.resource.data.remainingQuantityKg is number
+        && request.resource.data.remainingQuantityKg == request.resource.data.initialQuantityKg;
+
+      // Update Case 1: Listing owner updating their own listing
+      // Update Case 2: Requester updating remaining quantity and status during claim/request transaction
       allow update: if isAuthenticated() && (
-        resource.data.donorId == request.auth.uid ||
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingQuantityKg', 'status', 'updatedAt']))
+        (
+          resource.data.donorId == request.auth.uid &&
+          request.resource.data.donorId == resource.data.donorId
+        ) || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingQuantityKg', 'status', 'updatedAt']) &&
+          request.resource.data.donorId == resource.data.donorId &&
+          request.resource.data.initialQuantityKg == resource.data.initialQuantityKg &&
+          request.resource.data.foodName == resource.data.foodName &&
+          request.resource.data.remainingQuantityKg is number &&
+          request.resource.data.remainingQuantityKg >= 0 &&
+          request.resource.data.remainingQuantityKg <= resource.data.initialQuantityKg &&
+          request.resource.data.status in ['available', 'reserved', 'completed', 'expired', 'transferred_to_waste']
+        )
       );
+
       allow delete: if isAuthenticated() && resource.data.donorId == request.auth.uid;
     }
 
@@ -73,20 +93,52 @@ service cloud.firestore {
         resource.data.requesterId == request.auth.uid ||
         resource.data.donorId == request.auth.uid
       );
-      allow create: if isAuthenticated() && request.resource.data.requesterId == request.auth.uid;
-      allow update: if isAuthenticated() && (
-        resource.data.requesterId == request.auth.uid ||
-        resource.data.donorId == request.auth.uid
-      );
-      allow delete: if isAuthenticated() && resource.data.requesterId == request.auth.uid;
+      allow create: if isAuthenticated()
+        && request.resource.data.requesterId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.requestedQuantityKg is number
+        && request.resource.data.requestedQuantityKg > 0;
+
+      // Status updates by either donor (accept/reject) or requester (cancel/complete)
+      allow update: if isAuthenticated()
+        && (resource.data.requesterId == request.auth.uid || resource.data.donorId == request.auth.uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.requesterId == resource.data.requesterId
+        && request.resource.data.donorId == resource.data.donorId
+        && request.resource.data.listingId == resource.data.listingId
+        && request.resource.data.status in ['pending', 'accepted', 'completed', 'rejected', 'cancelled'];
+
+      allow delete: if isAuthenticated()
+        && resource.data.requesterId == request.auth.uid
+        && resource.data.status == 'pending';
     }
 
     // Waste Collections collection
     // Authorized waste partners and donors can view and update
     match /wasteCollections/{collectionId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
+
+      // Only the authenticated donor can create a waste record or transfer from a listing
+      allow create: if isAuthenticated() && request.resource.data.donorId == request.auth.uid;
+
+      // Allowed updates:
+      // 1. Donor managing their own waste record
+      // 2. Waste partner claiming a pending collection
+      // 3. Assigned waste partner updating status
+      allow update: if isAuthenticated() && (
+        resource.data.donorId == request.auth.uid ||
+        (
+          resource.data.status == 'pending' &&
+          request.resource.data.partnerId == request.auth.uid &&
+          request.resource.data.status == 'accepted' &&
+          request.resource.data.donorId == resource.data.donorId
+        ) || (
+          resource.data.partnerId == request.auth.uid &&
+          request.resource.data.donorId == resource.data.donorId &&
+          request.resource.data.partnerId == resource.data.partnerId
+        )
+      );
+
       allow delete: if isAuthenticated() && resource.data.donorId == request.auth.uid;
     }
   }
