@@ -27,14 +27,17 @@ export async function fetchLiveImpactMetrics(): Promise<ImpactMetrics> {
 
   try {
     const [listingsSnap, requestsSnap, wasteSnap] = await Promise.all([
-      getDocs(collection(db, 'foodListings')),
-      getDocs(collection(db, 'foodRequests')),
-      getDocs(collection(db, 'wasteCollections')),
+      getDocs(collection(db, 'foodListings')).catch((err) => {
+        console.warn('[Impact Service] foodListings read notice:', err?.message);
+        return null;
+      }),
+      getDocs(collection(db, 'foodRequests')).catch(() => null),
+      getDocs(collection(db, 'wasteCollections')).catch(() => null),
     ]);
 
-    const listings = listingsSnap.docs.map((d) => d.data() as FoodListing);
-    const requests = requestsSnap.docs.map((d) => d.data() as FoodRequest);
-    const wasteList = wasteSnap.docs.map((d) => d.data() as WasteCollection);
+    const listings = listingsSnap ? listingsSnap.docs.map((d) => d.data() as FoodListing) : [];
+    const requests = requestsSnap ? requestsSnap.docs.map((d) => d.data() as FoodRequest) : [];
+    const wasteList = wasteSnap ? wasteSnap.docs.map((d) => d.data() as WasteCollection) : [];
 
     let totalFoodListedKg = 0;
     let totalFoodPortions = 0;

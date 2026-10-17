@@ -171,6 +171,12 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
   const cleanPhone = params.phone.trim();
   const cleanAddress = params.address.trim();
 
+  // Validate allowed role upfront
+  const validRoles: UserRole[] = ['donor', 'requester', 'waste_partner', 'admin'];
+  if (!validRoles.includes(params.role)) {
+    throw new Error(`Invalid user role "${params.role}". Allowed roles: ${validRoles.join(', ')}`);
+  }
+
   let user: FirebaseUser;
 
   // 1. Obtain authenticated Firebase user
@@ -194,14 +200,25 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
     }
   }
 
-  // 2. Set Firebase Auth displayName
+  if (!user || !user.uid) {
+    throw new Error('Authentication failed: Missing authenticated user UID.');
+  }
+
+  // 2. Ensure Firebase Auth token is minted and active on client SDK before writing to Firestore
+  try {
+    await user.getIdToken();
+  } catch (tokenErr) {
+    console.warn('[signUpUser] Token pre-fetch warning:', tokenErr);
+  }
+
+  // 3. Set Firebase Auth displayName
   try {
     await updateProfile(user, { displayName: cleanName });
   } catch (err) {
     console.warn('Could not update Auth displayName:', err);
   }
 
-  // 3. Prepare UserProfile document matching project schema
+  // 4. Prepare UserProfile document matching project schema & security rules
   const profileData: UserProfile = {
     uid: user.uid,
     email: cleanEmail,
@@ -214,7 +231,7 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
     updatedAt: serverTimestamp(),
   };
 
-  // 4. Save profile in Firestore collection 'users' with document ID = user.uid
+  // 5. Save profile in Firestore collection 'users' with document ID = user.uid
   try {
     await withFirestoreTimeout(
       setDoc(doc(db, 'users', user.uid), profileData, { merge: true }),
@@ -224,8 +241,20 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
       user
     );
   } catch (fsErr: any) {
-    console.error('[Firestore SignUp Write Error] Code:', fsErr?.code);
-    console.error('[Firestore SignUp Write Error] Message:', fsErr?.message);
+    console.error(`[Firestore SignUp Write Error] Document Path: users/${user.uid}`);
+    console.error(`[Firestore SignUp Write Error] Authenticated UID: ${user.uid}`);
+    console.error(`[Firestore SignUp Write Error] Code:`, fsErr?.code);
+    console.error(`[Firestore SignUp Write Error] Message:`, fsErr?.message);
+    if (fsErr?.code === 'permission-denied') {
+      const enhancedErr: any = new Error(
+        `Cloud Firestore permission denied when writing profile to "users/${user.uid}". Authenticated UID: "${user.uid}". Please ensure Firestore Security Rules allow request.auth.uid == userId.`
+      );
+      enhancedErr.code = 'permission-denied';
+      enhancedErr.collectionPath = 'users';
+      enhancedErr.authenticatedUid = user.uid;
+      enhancedErr.originalError = fsErr;
+      throw enhancedErr;
+    }
     throw fsErr;
   }
 
@@ -252,6 +281,14 @@ export async function signInUser(email: string, password: string): Promise<UserP
       'Firebase Authentication request timed out after 6 seconds. Please check your network connection.'
     );
     user = userCredential.user;
+
+    // Ensure Auth token is initialized before Firestore read operations
+    try {
+      await user.getIdToken();
+    } catch (tokenErr) {
+      console.warn('[signInUser] ID token pre-fetch warning:', tokenErr);
+    }
+
     console.timeEnd('[Auth Service] 1. Firebase Auth (signInWithEmailAndPassword)');
     console.log('[Auth Service] Firebase Auth successful. Authenticated UID:', user.uid);
   } catch (authErr: any) {
@@ -307,6 +344,15 @@ export async function signInUser(email: string, password: string): Promise<UserP
       try {
         await signOut(auth);
       } catch {}
+      if (fsErr?.code === 'permission-denied') {
+        const enhancedErr: any = new Error(
+          `Firestore permission denied when initializing profile in "users/${user.uid}". Authenticated UID: "${user.uid}".`
+        );
+        enhancedErr.code = 'permission-denied';
+        enhancedErr.collectionPath = 'users';
+        enhancedErr.authenticatedUid = user.uid;
+        throw enhancedErr;
+      }
       throw fsErr;
     }
   }
@@ -331,6 +377,22 @@ export async function getUserProfile(uid: string, timeoutMs: number = 4500): Pro
   }
 
   const fetchPromise = (async () => {
+    // If auth state is initializing, wait for auth to be ready
+    if (auth) {
+      if (!auth.currentUser) {
+        try {
+          await auth.authStateReady();
+        } catch {}
+      }
+      if (auth.currentUser && auth.currentUser.uid === uid) {
+        try {
+          await auth.currentUser.getIdToken();
+        } catch (tokenErr) {
+          console.warn('[Firestore] Token refresh warning before getDoc:', tokenErr);
+        }
+      }
+    }
+
     console.time(`[Firestore] getDoc users/${uid}`);
     try {
       const userDoc = await withFirestoreTimeout(
@@ -352,8 +414,21 @@ export async function getUserProfile(uid: string, timeoutMs: number = 4500): Pro
       return null;
     } catch (err: any) {
       console.timeEnd(`[Firestore] getDoc users/${uid}`);
+      const authUid = auth?.currentUser?.uid || 'unauthenticated';
+      console.error(`[Firestore Profile Fetch Error] Document Path: users/${uid}`);
+      console.error(`[Firestore Profile Fetch Error] Authenticated UID: ${authUid}`);
       console.error(`[Firestore Profile Fetch Error] Code:`, err?.code);
       console.error(`[Firestore Profile Fetch Error] Message:`, err?.message);
+      if (err?.code === 'permission-denied') {
+        const enhancedErr: any = new Error(
+          `Firestore permission denied when reading profile from "users/${uid}". Authenticated UID: "${authUid}". Please ensure Firestore Security Rules allow request.auth.uid == userId.`
+        );
+        enhancedErr.code = 'permission-denied';
+        enhancedErr.collectionPath = 'users';
+        enhancedErr.authenticatedUid = authUid;
+        enhancedErr.originalError = err;
+        throw enhancedErr;
+      }
       throw err;
     }
   })().finally(() => {
@@ -369,14 +444,35 @@ export async function updateUserProfile(
   updates: Partial<Omit<UserProfile, 'uid' | 'createdAt'>>
 ): Promise<void> {
   if (!db) throw new Error('Firestore is not available');
-  await withFirestoreTimeout(
-    updateDoc(doc(db, 'users', uid), {
-      ...updates,
-      updatedAt: serverTimestamp(),
-    }),
-    5000,
-    'Failed to update profile: Firestore timed out',
-    `users/${uid}`,
-    auth?.currentUser
-  );
+
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
+    try {
+      await auth.currentUser.getIdToken();
+    } catch {}
+  }
+
+  try {
+    await withFirestoreTimeout(
+      updateDoc(doc(db, 'users', uid), {
+        ...updates,
+        updatedAt: serverTimestamp(),
+      }),
+      5000,
+      'Failed to update profile: Firestore timed out',
+      `users/${uid}`,
+      auth?.currentUser
+    );
+  } catch (err: any) {
+    if (err?.code === 'permission-denied') {
+      const authUid = auth?.currentUser?.uid || 'unauthenticated';
+      const enhancedErr: any = new Error(
+        `Firestore permission denied when updating profile "users/${uid}". Authenticated UID: "${authUid}".`
+      );
+      enhancedErr.code = 'permission-denied';
+      enhancedErr.collectionPath = 'users';
+      enhancedErr.authenticatedUid = authUid;
+      throw enhancedErr;
+    }
+    throw err;
+  }
 }

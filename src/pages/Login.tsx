@@ -72,7 +72,9 @@ export const Login: React.FC<Props> = ({ onNavigate }) => {
       console.error('[Login Flow] Original Firebase Error Message:', err?.message);
       let msg = err?.message || 'Failed to sign in. Please check your credentials.';
 
-      if (err?.code === 'auth/invalid-credential' || err?.code === 'auth/wrong-password') {
+      if (err?.code === 'permission-denied') {
+        msg = 'Firestore permission denied: Your login was authenticated, but Cloud Firestore denied reading your profile. Please ensure the updated Firestore Security Rules are published in Firebase Console.';
+      } else if (err?.code === 'auth/invalid-credential' || err?.code === 'auth/wrong-password') {
         msg = 'Invalid email or password. Please verify and try again.';
       } else if (err?.code === 'auth/user-not-found') {
         msg = 'No registered account found with this email. Please register first.';

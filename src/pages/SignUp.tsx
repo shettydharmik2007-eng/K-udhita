@@ -91,7 +91,9 @@ export const SignUp: React.FC<Props> = ({ onNavigate }) => {
       console.error('[Registration Flow] Original Firebase Error Code:', err?.code);
       console.error('[Registration Flow] Original Firebase Error Message:', err?.message);
       let msg = err?.message || 'Registration failed. Please try again.';
-      if (err?.code === 'auth/email-already-in-use') {
+      if (err?.code === 'permission-denied') {
+        msg = 'Firestore permission denied: Your account is authenticated, but Cloud Firestore denied writing your profile. Please ensure the updated Firestore Security Rules are published in Firebase Console.';
+      } else if (err?.code === 'auth/email-already-in-use') {
         msg = 'An account with this email address already exists. If this is your account, please sign in with your password.';
       } else if (err?.code === 'auth/weak-password') {
         msg = 'The password is too weak. Please use at least 6 characters.';

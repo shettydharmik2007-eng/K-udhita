@@ -11,11 +11,44 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isValidRole(role) {
+      return role in ['donor', 'requester', 'waste_partner', 'admin'];
+    }
+
+    function hasValidUserFields() {
+      let allowedFields = [
+        'uid', 'email', 'name', 'role', 'organizationName', 'phone', 'address', 'createdAt', 'updatedAt'
+      ];
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    function isValidUserProfileCreate(userId) {
+      let data = request.resource.data;
+      return isOwner(userId)
+        && data.uid == userId
+        && isValidRole(data.role)
+        && hasValidUserFields()
+        && data.email is string
+        && data.name is string
+        && data.name.size() > 0;
+    }
+
+    function isValidUserProfileUpdate(userId) {
+      let data = request.resource.data;
+      return isOwner(userId)
+        && data.uid == userId
+        && isValidRole(data.role)
+        && hasValidUserFields()
+        && (!('uid' in resource.data) || data.uid == resource.data.uid)
+        && (!('createdAt' in resource.data) || data.createdAt == resource.data.createdAt);
+    }
+
     // Users collection
-    // Any authenticated user can read profiles; each user can only write their own profile
+    // Authenticated users can create and read ONLY their own profile (request.auth.uid == userId)
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isOwner(userId);
+      allow read: if isOwner(userId);
+      allow create: if isValidUserProfileCreate(userId);
+      allow update: if isValidUserProfileUpdate(userId);
       allow delete: if false; // Profiles should not be deleted arbitrarily
     }
 
