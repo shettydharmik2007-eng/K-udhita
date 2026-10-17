@@ -10,7 +10,20 @@ export interface UserProfile {
   address: string;
   createdAt: any;
   updatedAt?: any;
+
+  // Recycler Profile Details
+  recyclerType?: RecyclerType;
+  serviceArea?: string;
+  acceptedCategories?: WasteCategory[];
+  maxCapacityKg?: number;
+  pickupArrangements?: string;
 }
+
+export type RecyclerType =
+  | 'biogas_plant'
+  | 'composting_facility'
+  | 'fertilizer_company'
+  | 'other';
 
 export type FoodCategory =
   | 'rice_pulao'
@@ -118,13 +131,26 @@ export interface FoodRequest {
   updatedAt?: any;
 }
 
-export type WasteCategory = 'composting' | 'biogas' | 'other_disposal';
+export type WasteCategory =
+  | 'cooked_food'
+  | 'rice_bread'
+  | 'veg_fruit'
+  | 'mixed_organic'
+  | 'other_organic'
+  | 'composting'
+  | 'biogas'
+  | 'other_disposal';
 
 export type WasteCollectionStatus =
+  | 'available'
   | 'pending'
+  | 'collection_requested'
   | 'accepted'
   | 'collected'
-  | 'completed';
+  | 'processing'
+  | 'processed'
+  | 'completed'
+  | 'cancelled';
 
 export interface WasteCollection {
   id: string;
@@ -135,6 +161,8 @@ export interface WasteCollection {
   foodName: string;
   category: WasteCategory;
   quantityKg: number;
+  actualCollectedKg?: number;
+  processingMethod?: string;
   location: string;
   destinationFacility: string;
   partnerId?: string;
@@ -142,8 +170,19 @@ export interface WasteCollection {
   partnerPhone?: string;
   status: WasteCollectionStatus;
   notes?: string;
+
+  // Additional listing context
+  pickupDeadline?: string;
+  prepDate?: string;
+  prepTime?: string;
+  storageCondition?: StorageCondition;
+  foodCondition?: FoodCondition;
+  imageUrl?: string;
+
   createdAt: any;
   updatedAt?: any;
+  collectedAt?: any;
+  processedAt?: any;
 }
 
 export interface ImpactMetrics {

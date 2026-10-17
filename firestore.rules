@@ -17,7 +17,8 @@ service cloud.firestore {
 
     function hasValidUserFields() {
       let allowedFields = [
-        'uid', 'email', 'name', 'role', 'organizationName', 'phone', 'address', 'createdAt', 'updatedAt'
+        'uid', 'email', 'name', 'role', 'organizationName', 'phone', 'address', 'createdAt', 'updatedAt',
+        'recyclerType', 'serviceArea', 'acceptedCategories', 'maxCapacityKg', 'pickupArrangements'
       ];
       return request.resource.data.keys().hasOnly(allowedFields);
     }
@@ -114,23 +115,27 @@ service cloud.firestore {
     }
 
     // Waste Collections collection
-    // Authorized waste partners and donors can view and update
+    // Authorized waste partners and donors can view, claim and update
     match /wasteCollections/{collectionId} {
       allow read: if isAuthenticated();
 
-      // Only the authenticated donor can create a waste record or transfer from a listing
-      allow create: if isAuthenticated() && request.resource.data.donorId == request.auth.uid;
+      // Allowed creates:
+      // 1. Donor creating a waste collection record
+      // 2. Waste partner creating a collection request from an unsuitable surplus listing
+      allow create: if isAuthenticated() && (
+        request.resource.data.donorId == request.auth.uid ||
+        request.resource.data.partnerId == request.auth.uid
+      );
 
       // Allowed updates:
       // 1. Donor managing their own waste record
-      // 2. Waste partner claiming a pending collection
-      // 3. Assigned waste partner updating status
+      // 2. Waste partner requesting / claiming a pending collection
+      // 3. Assigned waste partner updating status, actual weight, and processing details
       allow update: if isAuthenticated() && (
         resource.data.donorId == request.auth.uid ||
         (
-          resource.data.status == 'pending' &&
+          resource.data.status in ['pending', 'available'] &&
           request.resource.data.partnerId == request.auth.uid &&
-          request.resource.data.status == 'accepted' &&
           request.resource.data.donorId == resource.data.donorId
         ) || (
           resource.data.partnerId == request.auth.uid &&
@@ -139,7 +144,10 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isAuthenticated() && resource.data.donorId == request.auth.uid;
+      allow delete: if isAuthenticated() && (
+        resource.data.donorId == request.auth.uid ||
+        resource.data.partnerId == request.auth.uid
+      );
     }
   }
 }

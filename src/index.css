@@ -3665,4 +3665,208 @@ input, select, textarea {
   gap: 0.4rem;
 }
 
+/* ==========================================================================
+   Waste Recycler Dashboard Styles
+   ========================================================================== */
+
+.recycler-dashboard-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.recycler-tabs-nav {
+  display: flex;
+  gap: 0.75rem;
+  border-bottom: 2px solid var(--color-slate-200);
+  padding-bottom: 0.25rem;
+  margin-top: 1.5rem;
+  overflow-x: auto;
+}
+
+.recycler-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.15rem;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--color-slate-600);
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -0.35rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-radius: 6px 6px 0 0;
+  white-space: nowrap;
+}
+
+.recycler-tab-btn:hover {
+  color: #0d9488;
+  background: var(--color-slate-50);
+}
+
+.recycler-tab-btn.active {
+  color: #0f766e;
+  border-bottom-color: #0f766e;
+  background: #f0fdfa;
+}
+
+.recycler-tab-badge {
+  background: var(--color-slate-200);
+  color: var(--color-slate-700);
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 700;
+}
+
+.recycler-tab-btn.active .recycler-tab-badge {
+  background: #0f766e;
+  color: #ffffff;
+}
+
+/* Waste Listing Cards */
+.recycler-listings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1.5rem;
+}
+
+.recycler-card {
+  background: #ffffff;
+  border: 1px solid var(--color-slate-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.recycler-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+  border-color: #0d9488;
+}
+
+.recycler-badge-unsuitable {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.recycler-workflow-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--color-slate-500);
+  background: var(--color-slate-50);
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-slate-200);
+  overflow-x: auto;
+}
+
+.workflow-step-chip {
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.7rem;
+  background: #e2e8f0;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.workflow-step-chip.current {
+  background: #0f766e;
+  color: #ffffff;
+}
+
+.workflow-step-chip.done {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+/* Category Checkboxes in Recycler Profile */
+.checkbox-category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.checkbox-category-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border: 1.5px solid var(--color-slate-300);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.checkbox-category-card:hover {
+  border-color: #0d9488;
+}
+
+.checkbox-category-card.selected {
+  border-color: #0f766e;
+  background: #f0fdfa;
+}
+
+.checkbox-category-card input[type="checkbox"] {
+  margin-top: 0.25rem;
+  accent-color: #0f766e;
+  width: 16px;
+  height: 16px;
+}
+
+/* History Data Table */
+.recycler-table-container {
+  background: #ffffff;
+  border: 1px solid var(--color-slate-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.recycler-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.88rem;
+}
+
+.recycler-data-table th {
+  background: #f8fafc;
+  color: var(--color-slate-700);
+  font-weight: 700;
+  padding: 0.85rem 1rem;
+  border-bottom: 1.5px solid var(--color-slate-200);
+  white-space: nowrap;
+}
+
+.recycler-data-table td {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--color-slate-100);
+  vertical-align: middle;
+}
+
+.recycler-data-table tr:hover td {
+  background: #f8fafc;
+}
+
+
 

@@ -96,6 +96,7 @@ export function AppContent() {
       case 'ngo-dashboard':
         return <NgoDashboard onNavigate={navigateTo} />;
       case 'partner-dashboard':
+      case 'recycler-dashboard':
         return <PartnerDashboard onNavigate={navigateTo} />;
       case 'login':
         return <Login onNavigate={navigateTo} />;

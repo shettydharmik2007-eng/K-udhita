@@ -127,7 +127,7 @@ export const Navbar: React.FC<Props> = ({ currentPage, onNavigate }) => {
           {isWastePartner && (
             <button
               type="button"
-              className={`nav-link panel-link waste-panel-btn ${currentPage === 'partner-dashboard' ? 'active' : ''}`}
+              className={`nav-link panel-link waste-panel-btn ${currentPage === 'partner-dashboard' || currentPage === 'recycler-dashboard' ? 'active' : ''}`}
               onClick={() => handleNav('partner-dashboard')}
             >
               <Truck size={15} />
@@ -284,7 +284,7 @@ export const Navbar: React.FC<Props> = ({ currentPage, onNavigate }) => {
             {isWastePartner && (
               <button
                 type="button"
-                className={`mobile-link ${currentPage === 'partner-dashboard' ? 'active' : ''}`}
+                className={`mobile-link ${currentPage === 'partner-dashboard' || currentPage === 'recycler-dashboard' ? 'active' : ''}`}
                 onClick={() => handleNav('partner-dashboard')}
               >
                 <Truck size={18} />

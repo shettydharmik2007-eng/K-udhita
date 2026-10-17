@@ -22,10 +22,16 @@ export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
         return 'badge-waste';
       case 'pending':
         return 'badge-warning';
+      case 'collection_requested':
+        return 'badge-warning';
       case 'accepted':
         return 'badge-info';
       case 'collected':
         return 'badge-secondary';
+      case 'processing':
+        return 'badge-info';
+      case 'processed':
+        return 'badge-success';
       case 'rejected':
       case 'cancelled':
         return 'badge-danger';
@@ -55,11 +61,17 @@ export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
       case 'transferred_to_waste':
         return 'Routed to Waste';
       case 'pending':
-        return 'Pending Review';
+        return 'Available for Pickup';
+      case 'collection_requested':
+        return 'Collection Requested';
       case 'accepted':
         return 'Accepted / Scheduled';
       case 'collected':
         return 'Collected';
+      case 'processing':
+        return 'In Processing';
+      case 'processed':
+        return 'Processed & Repurposed';
       case 'rejected':
         return 'Declined';
       case 'cancelled':
