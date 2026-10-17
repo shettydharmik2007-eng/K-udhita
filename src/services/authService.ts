@@ -26,10 +26,14 @@ export interface SignUpParams {
 }
 
 /**
- * Probes the Firestore REST endpoint to extract the authentic Google Cloud / Firebase
- * error code and message when a write or read does not resolve.
+ * Probes the Firestore REST endpoint as separate backend diagnostic context
+ * when a Firestore operation times out.
+ * If a signed-in user is provided, probes their specific document with an ID token.
  */
-export async function getFirestoreBackendDiagnostics(): Promise<{ code: string; message: string } | null> {
+export async function getFirestoreBackendDiagnostics(
+  docPath?: string,
+  user?: FirebaseUser | null
+): Promise<{ code: string; message: string } | null> {
   const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
   const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
 
@@ -40,30 +44,41 @@ export async function getFirestoreBackendDiagnostics(): Promise<{ code: string; 
     };
   }
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users?key=${apiKey}`;
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeoutId);
+  try {
+    const headers: Record<string, string> = {};
+    if (user) {
+      try {
+        const idToken = await user.getIdToken();
+        if (idToken) {
+          headers['Authorization'] = `Bearer ${idToken}`;
+        }
+      } catch (tokenErr) {
+        console.warn('[Diagnostics] Could not obtain user ID token:', tokenErr);
+      }
+    }
+
+    const targetPath = docPath || 'users';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${targetPath}?key=${apiKey}`;
+    const response = await fetch(url, { signal: controller.signal, headers });
 
     if (!response.ok) {
       const data = await response.json().catch(() => null);
       if (data?.error) {
         const errCode = data.error.status || `HTTP_${data.error.code}`;
         const errMsg = data.error.message || `Firestore returned HTTP status ${response.status}`;
-        console.error('[Firebase Original Error Code]:', errCode);
-        console.error('[Firebase Original Error Message]:', errMsg);
-        console.error('[Firebase Error Details]:', data.error);
+        console.warn('[Firestore Diagnostic Context] Code:', errCode);
+        console.warn('[Firestore Diagnostic Context] Message:', errMsg);
         return {
           code: errCode,
           message: errMsg,
         };
       }
       const genericMsg = `Firestore endpoint returned HTTP ${response.status}: ${response.statusText}`;
-      console.error('[Firebase Original Error Code]:', `HTTP_${response.status}`);
-      console.error('[Firebase Original Error Message]:', genericMsg);
+      console.warn('[Firestore Diagnostic Context] Code:', `HTTP_${response.status}`);
+      console.warn('[Firestore Diagnostic Context] Message:', genericMsg);
       return {
         code: `HTTP_${response.status}`,
         message: genericMsg,
@@ -74,38 +89,66 @@ export async function getFirestoreBackendDiagnostics(): Promise<{ code: string; 
     if (err.name === 'AbortError') {
       return {
         code: 'PROBE_TIMEOUT',
-        message: 'Network request to Cloud Firestore backend timed out.',
+        message: 'Network probe to Cloud Firestore backend timed out.',
       };
     }
     return {
       code: 'NETWORK_ERROR',
       message: err?.message || 'Network connectivity error reaching Firestore.',
     };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
 /**
- * Wraps a promise with a timeout to avoid hanging indefinitely.
- * When the timeout fires, it actively probes the Firestore backend
- * to capture and log the original Firebase/Google error code and message.
+ * Standard timeout wrapper for general/Authentication operations.
+ * Retains and rejects strictly with the supplied timeout message without running Firestore diagnostics.
  */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, defaultTimeoutMessage: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+  errorCode: string = 'auth/timeout'
+): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err: any = new Error(timeoutMessage);
+      err.code = errorCode;
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * Timeout wrapper specifically for Firestore operations.
+ * Upon timeout, gathers backend diagnostics as separate context and preserves
+ * the original operation's timeout error.
+ */
+function withFirestoreTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  defaultTimeoutMessage: string,
+  docPath?: string,
+  user?: FirebaseUser | null
+): Promise<T> {
   let timer: any;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(async () => {
       try {
-        const diag = await getFirestoreBackendDiagnostics();
+        const diag = await getFirestoreBackendDiagnostics(docPath, user);
         if (diag) {
-          console.error(`[Firestore Operation Failed] Code: ${diag.code} - ${diag.message}`);
-          const err: any = new Error(`[${diag.code}] ${diag.message}`);
-          err.code = diag.code;
-          err.originalMessage = diag.message;
-          reject(err);
-          return;
+          console.warn(`[Firestore Backend Diagnostic Context] Code: ${diag.code} - ${diag.message}`);
         }
-      } catch {}
+      } catch (diagErr) {
+        console.warn('[Firestore Backend Diagnostic Context] Failed to collect diagnostics:', diagErr);
+      }
 
-      console.error('[Firestore Operation Failed] Code: firestore/timeout -', defaultTimeoutMessage);
       const err: any = new Error(defaultTimeoutMessage);
       err.code = 'firestore/timeout';
       reject(err);
@@ -173,10 +216,12 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
 
   // 4. Save profile in Firestore collection 'users' with document ID = user.uid
   try {
-    await withTimeout(
+    await withFirestoreTimeout(
       setDoc(doc(db, 'users', user.uid), profileData, { merge: true }),
       10000,
-      'Cloud Firestore timed out while saving your profile. Please ensure Cloud Firestore Database is enabled in Firebase Console (Build → Firestore Database → Create database).'
+      'Cloud Firestore timed out while saving your profile. Please ensure Cloud Firestore Database is enabled in Firebase Console (Build → Firestore Database → Create database).',
+      `users/${user.uid}`,
+      user
     );
   } catch (fsErr: any) {
     console.error('[Firestore SignUp Write Error] Code:', fsErr?.code);
@@ -249,10 +294,12 @@ export async function signInUser(email: string, password: string): Promise<UserP
     };
 
     try {
-      await withTimeout(
+      await withFirestoreTimeout(
         setDoc(doc(db, 'users', user.uid), fallbackProfile, { merge: true }),
         4000,
-        'Timed out while initializing user profile in Cloud Firestore.'
+        'Timed out while initializing user profile in Cloud Firestore.',
+        `users/${user.uid}`,
+        user
       );
       profile = fallbackProfile;
     } catch (fsErr: any) {
@@ -286,10 +333,12 @@ export async function getUserProfile(uid: string, timeoutMs: number = 4500): Pro
   const fetchPromise = (async () => {
     console.time(`[Firestore] getDoc users/${uid}`);
     try {
-      const userDoc = await withTimeout(
+      const userDoc = await withFirestoreTimeout(
         getDoc(doc(db, 'users', uid)),
         timeoutMs,
-        `Cloud Firestore profile lookup for "${uid}" timed out after ${timeoutMs}ms.`
+        `Cloud Firestore profile lookup for "${uid}" timed out after ${timeoutMs}ms.`,
+        `users/${uid}`,
+        auth?.currentUser
       );
       console.timeEnd(`[Firestore] getDoc users/${uid}`);
 
@@ -320,12 +369,14 @@ export async function updateUserProfile(
   updates: Partial<Omit<UserProfile, 'uid' | 'createdAt'>>
 ): Promise<void> {
   if (!db) throw new Error('Firestore is not available');
-  await withTimeout(
+  await withFirestoreTimeout(
     updateDoc(doc(db, 'users', uid), {
       ...updates,
       updatedAt: serverTimestamp(),
     }),
     5000,
-    'Failed to update profile: Firestore timed out'
+    'Failed to update profile: Firestore timed out',
+    `users/${uid}`,
+    auth?.currentUser
   );
 }
