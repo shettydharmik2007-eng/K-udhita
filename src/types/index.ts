@@ -9,6 +9,7 @@ export interface UserProfile {
   phone: string;
   address: string;
   createdAt: any;
+  updatedAt?: any;
 }
 
 export type FoodCategory =

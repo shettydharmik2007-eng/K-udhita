@@ -14,7 +14,7 @@ interface AuthContextType {
   isDonor: boolean;
   isRequester: boolean;
   isWastePartner: boolean;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: (knownProfile?: UserProfile) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -53,9 +53,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  const refreshProfile = async () => {
-    if (currentUser) {
-      await fetchProfile(currentUser.uid);
+  const refreshProfile = async (knownProfile?: UserProfile) => {
+    if (knownProfile) {
+      setUserProfile(knownProfile);
+      if (auth?.currentUser) {
+        setCurrentUser(auth.currentUser);
+      }
+      return;
+    }
+    const targetUid = currentUser?.uid || auth?.currentUser?.uid;
+    if (targetUid) {
+      await fetchProfile(targetUid);
     }
   };
 

@@ -36,8 +36,8 @@ export const Login: React.FC<Props> = ({ onNavigate }) => {
 
     setLoading(true);
     try {
-      const profile = await signInUser(email, password);
-      await refreshProfile();
+      const profile = await signInUser(email.trim(), password);
+      await refreshProfile(profile);
       showNotification('success', 'Signed In', `Welcome back to Kṣudhita, ${profile.name}!`);
 
       // Route directly to the user's specific dedicated panel

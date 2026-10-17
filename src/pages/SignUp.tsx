@@ -64,37 +64,51 @@ export const SignUp: React.FC<Props> = ({ onNavigate }) => {
     setLoading(true);
     try {
       const profile = await signUpUser({
-        email,
+        email: email.trim(),
         password,
-        name,
+        name: name.trim(),
         role,
-        organizationName: organizationName || name,
-        phone,
-        address,
+        organizationName: (organizationName || name).trim(),
+        phone: phone.trim(),
+        address: address.trim(),
       });
 
-      await refreshProfile();
+      // Synchronize authenticated user profile immediately across context
+      await refreshProfile(profile);
       showNotification('success', 'Registration Successful', `Welcome to Kṣudhita, ${profile.name}!`);
 
-      // Immediately navigate to their dedicated panel
-      if (role === 'donor') {
+      // Immediately navigate to their dedicated panel based on selected role
+      const targetRole = profile.role || role;
+      if (targetRole === 'donor') {
         onNavigate('hotel-dashboard');
-      } else if (role === 'waste_partner') {
+      } else if (targetRole === 'waste_partner') {
         onNavigate('partner-dashboard');
       } else {
         onNavigate('my-requests');
       }
     } catch (err: any) {
       console.error('Registration failed:', err);
-      let msg = err.message || 'Registration failed. Please try again.';
-      if (err.code === 'auth/email-already-in-use') {
-        msg = 'An account with this email address already exists. Please sign in.';
-      } else if (err.code === 'auth/weak-password') {
+      let msg = err?.message || 'Registration failed. Please try again.';
+      if (err?.code === 'auth/email-already-in-use') {
+        msg = 'An account with this email address already exists. If this is your account, please sign in with your password.';
+      } else if (err?.code === 'auth/weak-password') {
         msg = 'The password is too weak. Please use at least 6 characters.';
+      } else if (err?.code === 'auth/invalid-email') {
+        msg = 'The email address is invalid. Please verify and try again.';
+      } else if (err?.code === 'auth/network-request-failed') {
+        msg = 'Network connection error. Please verify your internet connection.';
+      } else if (
+        err?.code === 'firestore/timeout' ||
+        err?.code === 'permission-denied' ||
+        msg.includes('Cloud Firestore') ||
+        msg.includes('PERMISSION_DENIED')
+      ) {
+        msg = err.message || 'Cloud Firestore Database is not enabled. Please open Firebase Console → Firestore Database and click "Create database".';
       }
       setErrorMessage(msg);
       showNotification('error', 'Registration Error', msg);
     } finally {
+      // Ensure loading state is always reset so UI never freezes
       setLoading(false);
     }
   };
