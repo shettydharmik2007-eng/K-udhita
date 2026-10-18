@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
-import { getFoodListingById, updateFoodListing, deleteFoodListing } from '../services/foodService';
+import { getFoodListingById, updateFoodListing, deleteFoodListing, uploadFoodImage } from '../services/foodService';
+import { ImageUpload } from '../components/common/ImageUpload';
 import type {
   FoodListing,
   FoodListingStatus,
@@ -53,6 +54,13 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Photo editing states
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [removePhoto, setRemovePhoto] = useState(false);
+  const [photoUploadProgress, setPhotoUploadProgress] = useState<number | null>(null);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
@@ -133,6 +141,32 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
     setSaving(true);
     setErrorMessage(null);
     try {
+      let finalImageUrl = listing.imageUrl || '';
+
+      if (selectedFile) {
+        setIsUploadingPhoto(true);
+        setPhotoUploadError(null);
+        try {
+          finalImageUrl = await uploadFoodImage(selectedFile, (pct) => {
+            setPhotoUploadProgress(pct);
+          });
+        } catch (uploadErr: any) {
+          console.error('Image upload failed during edit:', uploadErr);
+          const errorMsg = uploadErr.message || 'Firebase Storage upload failed';
+          setIsUploadingPhoto(false);
+          setPhotoUploadError(errorMsg);
+          setErrorMessage(
+            `Food photo upload failed: ${errorMsg}. Please retry or remove photo to save changes.`
+          );
+          setSaving(false);
+          return;
+        } finally {
+          setIsUploadingPhoto(false);
+        }
+      } else if (removePhoto) {
+        finalImageUrl = '';
+      }
+
       await updateFoodListing(
         listingId,
         {
@@ -147,6 +181,7 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
           pickupInstructions: pickupInstructions.trim(),
           status,
           description: description.trim(),
+          imageUrl: finalImageUrl,
         },
         currentUser.uid
       );
@@ -254,6 +289,33 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
               onChange={(e) => setFoodName(e.target.value)}
               disabled={isLocked}
               required
+            />
+          </div>
+
+          {/* Food Photo Upload & Camera */}
+          <div className="form-group">
+            <ImageUpload
+              previewUrl={listing.imageUrl}
+              onImageSelected={(file) => {
+                setSelectedFile(file);
+                setRemovePhoto(false);
+                setPhotoUploadError(null);
+              }}
+              onImageRemoved={() => {
+                setSelectedFile(null);
+                setRemovePhoto(true);
+                setPhotoUploadError(null);
+                setPhotoUploadProgress(null);
+              }}
+              uploadProgress={photoUploadProgress}
+              isUploading={isUploadingPhoto}
+              uploadError={photoUploadError}
+              onRetryUpload={() => {
+                setPhotoUploadError(null);
+                const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
+                handleSave(fakeEvent);
+              }}
+              disabled={isLocked || saving}
             />
           </div>
 

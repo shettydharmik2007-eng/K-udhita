@@ -2590,14 +2590,15 @@ input, select, textarea {
 .image-upload-box {
   border: 2px dashed var(--color-slate-300);
   border-radius: var(--radius-lg);
-  padding: 2.5rem 1.5rem;
+  padding: 2.25rem 1.5rem;
   text-align: center;
   background-color: var(--color-slate-50);
-  transition: all 0.2s ease;
+  transition: all 0.25s ease;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.75rem;
+  cursor: pointer;
 }
 
 .image-upload-box:hover {
@@ -2605,16 +2606,23 @@ input, select, textarea {
   background-color: var(--color-primary-50);
 }
 
+.image-upload-box.drag-over {
+  border-color: var(--color-primary-600);
+  background-color: var(--color-primary-100);
+  transform: scale(1.01);
+  box-shadow: var(--shadow-md);
+}
+
 .image-upload-icon-group {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 1rem;
 }
 
 .image-upload-instruction {
   font-weight: 700;
   font-size: 0.95rem;
-  color: var(--color-slate-700);
+  color: var(--color-slate-800);
 }
 
 .image-upload-hint {
@@ -2630,16 +2638,26 @@ input, select, textarea {
   justify-content: center;
 }
 
+/* Image Preview Card & Container */
+.image-preview-card {
+  background: white;
+  border: 1px solid var(--color-slate-200);
+  border-radius: var(--radius-lg);
+  padding: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+
 .image-preview-container {
   position: relative;
   width: 100%;
-  max-width: 400px;
-  height: 240px;
-  border-radius: var(--radius-lg);
+  max-width: 480px;
+  height: 260px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--color-slate-200);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   margin: 0 auto;
+  background-color: var(--color-slate-900);
 }
 
 .image-preview {
@@ -2648,35 +2666,190 @@ input, select, textarea {
   object-fit: cover;
 }
 
-.btn-remove-image {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  background: rgba(0, 0, 0, 0.7);
-  color: white;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-full);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.btn-remove-image:hover {
-  background: var(--color-red-600);
-}
-
 .image-preview-badge {
   position: absolute;
   bottom: 10px;
   left: 10px;
-  background: rgba(15, 23, 42, 0.8);
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(4px);
   color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--radius-sm);
+}
+
+.image-filesize-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(4px);
+  color: #a7f3d0;
   font-size: 0.75rem;
   font-weight: 700;
   padding: 0.25rem 0.6rem;
   border-radius: var(--radius-sm);
+}
+
+.image-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Upload Progress Track & Fill */
+.upload-progress-container {
+  width: 100%;
+  max-width: 480px;
+  margin: 0.75rem auto 0;
+}
+
+.upload-progress-track {
+  width: 100%;
+  height: 8px;
+  background-color: var(--color-slate-200);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary-500), var(--color-primary-400));
+  transition: width 0.25s ease-out;
+  border-radius: var(--radius-full);
+}
+
+/* Upload Error Box */
+.upload-error-box {
+  width: 100%;
+  max-width: 480px;
+  margin: 0.75rem auto 0;
+}
+
+/* Live Camera Modal & Viewfinder Styles */
+.camera-modal-card {
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-xl);
+}
+
+.camera-feed-box {
+  background: #020617;
+  position: relative;
+  width: 100%;
+}
+
+.camera-shutter-flash {
+  animation: cameraFlash 0.2s ease-out;
+}
+
+@keyframes cameraFlash {
+  0% {
+    filter: brightness(3);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+.viewfinder-overlay {
+  position: absolute;
+  inset: 12px;
+  pointer-events: none;
+}
+
+.viewfinder-corner {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-color: rgba(52, 211, 153, 0.9);
+  border-style: solid;
+}
+
+.viewfinder-corner.top-left {
+  top: 0;
+  left: 0;
+  border-width: 3px 0 0 3px;
+  border-top-left-radius: 8px;
+}
+
+.viewfinder-corner.top-right {
+  top: 0;
+  right: 0;
+  border-width: 3px 3px 0 0;
+  border-top-right-radius: 8px;
+}
+
+.viewfinder-corner.bottom-left {
+  bottom: 0;
+  left: 0;
+  border-width: 0 0 3px 3px;
+  border-bottom-left-radius: 8px;
+}
+
+.viewfinder-corner.bottom-right {
+  bottom: 0;
+  right: 0;
+  border-width: 0 3px 3px 0;
+  border-bottom-right-radius: 8px;
+}
+
+.viewfinder-center-guide {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 40px;
+  border: 1px dashed rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+}
+
+/* Camera Shutter Button */
+.camera-shutter-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: white;
+  border: 4px solid #e2e8f0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.camera-shutter-btn:hover:not(:disabled) {
+  transform: scale(1.06);
+  border-color: var(--color-primary-400);
+}
+
+.camera-shutter-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.camera-shutter-inner {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--color-primary-500);
+  transition: all 0.15s ease;
+}
+
+.camera-shutter-btn:hover .camera-shutter-inner {
+  background: var(--color-primary-600);
+}
+
+.camera-shutter-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.photo-preview-modal-body img {
+  border-radius: var(--radius-lg);
 }
 
 /* Empty State Card */

@@ -139,6 +139,11 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Photo upload states
+  const [photoUploadProgress, setPhotoUploadProgress] = useState<number | null>(null);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
+
   // Compute normalized standard kilograms
   const computedKg =
     recordedWeight && Number(recordedWeight) > 0
@@ -207,11 +212,27 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
     try {
       let imageUrl = '';
       if (selectedFile) {
-        setUploadProgress('Uploading food photo to Firebase Storage...');
+        setIsUploadingPhoto(true);
+        setPhotoUploadError(null);
+        setUploadProgress('Uploading food photo to Firebase Storage: 0%...');
         try {
-          imageUrl = await uploadFoodImage(selectedFile);
-        } catch (uploadErr) {
-          console.warn('Image upload notice:', uploadErr);
+          imageUrl = await uploadFoodImage(selectedFile, (percent) => {
+            setPhotoUploadProgress(percent);
+            setUploadProgress(`Uploading food photo to Firebase Storage: ${percent}%...`);
+          });
+        } catch (uploadErr: any) {
+          console.error('Image upload failed:', uploadErr);
+          const errorMsg = uploadErr.message || 'Firebase Storage upload failed';
+          setIsUploadingPhoto(false);
+          setPhotoUploadError(errorMsg);
+          setErrorMessage(
+            `Food photo upload failed: ${errorMsg}. Please retry or remove the photo to publish without one.`
+          );
+          setLoading(false);
+          setUploadProgress(null);
+          return;
+        } finally {
+          setIsUploadingPhoto(false);
         }
       }
 
@@ -372,8 +393,24 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
           </p>
 
           <ImageUpload
-            onImageSelected={(file) => setSelectedFile(file)}
-            onImageRemoved={() => setSelectedFile(null)}
+            onImageSelected={(file) => {
+              setSelectedFile(file);
+              setPhotoUploadError(null);
+            }}
+            onImageRemoved={() => {
+              setSelectedFile(null);
+              setPhotoUploadError(null);
+              setPhotoUploadProgress(null);
+            }}
+            uploadProgress={photoUploadProgress}
+            isUploading={isUploadingPhoto}
+            uploadError={photoUploadError}
+            onRetryUpload={() => {
+              setPhotoUploadError(null);
+              // Trigger form submission
+              const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
+              handleSubmit(fakeEvent);
+            }}
             disabled={loading}
           />
         </div>

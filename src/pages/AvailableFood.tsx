@@ -350,13 +350,24 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
             <div key={item.id} className="food-marketplace-card animate-hover-lift">
               <div className="food-card-media">
                 {item.imageUrl ? (
-                  <img src={item.imageUrl} alt={item.foodName} className="food-card-img" />
-                ) : (
-                  <div className="food-card-placeholder">
-                    <Utensils size={40} />
-                    <span>{item.category.replace('_', ' ')}</span>
-                  </div>
-                )}
+                  <img
+                    src={item.imageUrl}
+                    alt={item.foodName}
+                    className="food-card-img"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                      const ph = e.currentTarget.parentElement?.querySelector('.food-card-placeholder');
+                      if (ph) (ph as HTMLElement).style.display = 'flex';
+                    }}
+                  />
+                ) : null}
+                <div
+                  className="food-card-placeholder"
+                  style={{ display: item.imageUrl ? 'none' : 'flex' }}
+                >
+                  <Utensils size={40} />
+                  <span>{item.category.replace('_', ' ')}</span>
+                </div>
                 <div className="food-card-tags">
                   <span className={`tag-dietary ${item.dietaryType}`}>
                     {item.dietaryType.toUpperCase()}
@@ -453,13 +464,22 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
       >
         {selectedListing && (
           <form onSubmit={handleConfirmRequest} className="request-food-form">
-            <div className="request-summary-box">
-              <div className="summary-title">{selectedListing.foodName}</div>
-              <div className="summary-sub">
-                Offered by <strong>{selectedListing.donorOrg}</strong> • Located at {selectedListing.location}
-              </div>
-              <div className="summary-available-pill">
-                Available: <strong>{selectedListing.remainingQuantityKg} kg</strong> (~{selectedListing.portions} portions)
+            <div className="request-summary-box flex items-center gap-3">
+              {selectedListing.imageUrl && (
+                <img
+                  src={selectedListing.imageUrl}
+                  alt={selectedListing.foodName}
+                  className="w-16 h-16 object-cover rounded-lg shadow-sm shrink-0"
+                />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="summary-title truncate">{selectedListing.foodName}</div>
+                <div className="summary-sub truncate">
+                  Offered by <strong>{selectedListing.donorOrg}</strong> • {selectedListing.location}
+                </div>
+                <div className="summary-available-pill mt-1">
+                  Available: <strong>{selectedListing.remainingQuantityKg} kg</strong> (~{selectedListing.portions} portions)
+                </div>
               </div>
             </div>
 

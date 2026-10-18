@@ -766,13 +766,20 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
                           alt={item.foodName}
                           className="ngo-card-img"
                           loading="lazy"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const ph = e.currentTarget.parentElement?.querySelector('.ngo-card-img-placeholder');
+                            if (ph) (ph as HTMLElement).style.display = 'flex';
+                          }}
                         />
-                      ) : (
-                        <div className="ngo-card-img-placeholder">
-                          <span className="text-3xl mb-1">{catMeta.icon}</span>
-                          <span className="font-semibold text-sm">{catMeta.label}</span>
-                        </div>
-                      )}
+                      ) : null}
+                      <div
+                        className="ngo-card-img-placeholder"
+                        style={{ display: item.imageUrl ? 'none' : 'flex' }}
+                      >
+                        <span className="text-3xl mb-1">{catMeta.icon}</span>
+                        <span className="font-semibold text-sm">{catMeta.label}</span>
+                      </div>
 
                       {/* Top Left: Dietary & Category */}
                       <div className="ngo-card-badge-top-left">

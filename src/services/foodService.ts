@@ -12,7 +12,7 @@ import {
   runTransaction,
   serverTimestamp,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage, isFirebaseConfigured } from './firebase';
 import type {
   FoodListing,
@@ -38,34 +38,141 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
   });
 }
 
-export async function uploadFoodImage(file: File): Promise<string> {
+/**
+ * Compresses and scales an image to maximum dimensions before uploading to minimize bandwidth
+ * and ensure fast upload times even on slow mobile/hotel network connections.
+ */
+export async function compressAndOptimizeImage(
+  file: File,
+  maxDimension = 1280,
+  quality = 0.85
+): Promise<Blob> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve(file);
+      return;
+    }
+
+    if (!file.type.startsWith('image/') || file.type.includes('svg')) {
+      resolve(file);
+      return;
+    }
+
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let { width, height } = img;
+
+      if (width > maxDimension || height > maxDimension) {
+        if (width > height) {
+          height = Math.round((height * maxDimension) / width);
+          width = maxDimension;
+        } else {
+          width = Math.round((width * maxDimension) / height);
+          height = maxDimension;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, width);
+      canvas.height = Math.max(1, height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(file);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            resolve(blob);
+          } else {
+            resolve(file);
+          }
+        },
+        'image/jpeg',
+        quality
+      );
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+
+    img.src = objectUrl;
+  });
+}
+
+/**
+ * Uploads a food photo to Firebase Storage with real-time percentage progress callback.
+ * Returns the public HTTPS download URL.
+ */
+export async function uploadFoodImage(
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<string> {
   if (!isFirebaseConfigured || !storage) {
-    // If Firebase Storage is not configured in .env, gracefully fallback to Base64 data URL
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => resolve('');
-      reader.readAsDataURL(file);
-    });
+    throw new Error(
+      'Firebase Storage is not configured. Please verify VITE_FIREBASE_STORAGE_BUCKET in your environment settings.'
+    );
   }
 
-  try {
-    // Generate safe unique filename
-    const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const storageRef = ref(storage, `foodListings/${Date.now()}_${cleanName}`);
-    const snapshot = await uploadBytes(storageRef, file, {
-      contentType: file.type,
+  // Optimize image to under 1280px to ensure fast, reliable uploads
+  const optimizedBlob = await compressAndOptimizeImage(file, 1280, 0.85);
+
+  const cleanName = (file.name || 'food_photo.jpg').replace(/[^a-zA-Z0-9.-]/g, '_');
+  const storageRef = ref(storage, `foodListings/${Date.now()}_${cleanName}`);
+
+  return new Promise((resolve, reject) => {
+    const uploadTask = uploadBytesResumable(storageRef, optimizedBlob, {
+      contentType: 'image/jpeg',
+      cacheControl: 'public, max-age=31536000',
     });
-    return await getDownloadURL(snapshot.ref);
-  } catch (err) {
-    console.warn('Firebase Storage upload failed, falling back to local image data:', err);
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => resolve('');
-      reader.readAsDataURL(file);
-    });
-  }
+
+    uploadTask.on(
+      'state_changed',
+      (snapshot) => {
+        if (snapshot.totalBytes > 0) {
+          const progress = Math.round(
+            (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+          );
+          if (onProgress) {
+            onProgress(progress);
+          }
+        }
+      },
+      (error) => {
+        console.error('Firebase Storage upload error:', error);
+        let userMsg = error.message;
+        if (error.code === 'storage/unauthorized') {
+          userMsg =
+            'Storage permission denied. You must be signed in as a registered donor to upload food photos.';
+        } else if (error.code === 'storage/canceled') {
+          userMsg = 'Photo upload was canceled.';
+        } else if (error.code === 'storage/quota-exceeded') {
+          userMsg = 'Firebase Storage quota exceeded. Please contact administrator.';
+        } else if (error.code === 'storage/unknown') {
+          userMsg = 'Storage upload failed. Please verify network connection or Firebase Storage bucket CORS.';
+        }
+        const err = new Error(userMsg);
+        (err as any).code = error.code;
+        reject(err);
+      },
+      async () => {
+        try {
+          const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+          if (onProgress) onProgress(100);
+          resolve(downloadUrl);
+        } catch (urlErr) {
+          reject(urlErr);
+        }
+      }
+    );
+  });
 }
 
 export type CreateFoodListingInput = Omit<

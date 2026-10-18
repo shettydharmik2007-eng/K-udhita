@@ -271,13 +271,24 @@ export const Home: React.FC<Props> = ({ onNavigate }) => {
                 <div key={item.id} className="food-marketplace-card animate-hover-lift">
                   <div className="food-card-media">
                     {item.imageUrl ? (
-                      <img src={item.imageUrl} alt={item.foodName} className="food-card-img" />
-                    ) : (
-                      <div className="food-card-placeholder">
-                        <Utensils size={36} />
-                        <span>{item.category.replace('_', ' ')}</span>
-                      </div>
-                    )}
+                      <img
+                        src={item.imageUrl}
+                        alt={item.foodName}
+                        className="food-card-img"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          const ph = e.currentTarget.parentElement?.querySelector('.food-card-placeholder');
+                          if (ph) (ph as HTMLElement).style.display = 'flex';
+                        }}
+                      />
+                    ) : null}
+                    <div
+                      className="food-card-placeholder"
+                      style={{ display: item.imageUrl ? 'none' : 'flex' }}
+                    >
+                      <Utensils size={36} />
+                      <span>{item.category.replace('_', ' ')}</span>
+                    </div>
                     <div className="food-card-tags">
                       <span className={`tag-dietary ${item.dietaryType}`}>
                         {item.dietaryType.toUpperCase()}

@@ -93,6 +93,13 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
   const [extendedDeadlineTime, setExtendedDeadlineTime] = useState('');
   const [updatingOverdue, setUpdatingOverdue] = useState(false);
 
+  // Photo enlargement modal state
+  const [previewPhotoModal, setPreviewPhotoModal] = useState<{
+    url: string;
+    title: string;
+    category: string;
+  } | null>(null);
+
   const loadData = async () => {
     if (!currentUser || !isFirebaseConfigured) {
       setLoading(false);
@@ -564,13 +571,33 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                   {/* Card Media with Overlay Badges */}
                   <div className="listing-card-media relative">
                     {item.imageUrl ? (
-                      <img src={item.imageUrl} alt={item.foodName} className="listing-thumb" />
-                    ) : (
-                      <div className="listing-thumb-placeholder">
-                        <span className="text-3xl mb-1">{catMeta.icon}</span>
-                        <span className="font-semibold">{catMeta.label}</span>
-                      </div>
-                    )}
+                      <img
+                        src={item.imageUrl}
+                        alt={item.foodName}
+                        className="listing-thumb cursor-pointer hover:opacity-95 transition-opacity"
+                        onClick={() =>
+                          setPreviewPhotoModal({
+                            url: item.imageUrl!,
+                            title: item.foodName,
+                            category: catMeta.label,
+                          })
+                        }
+                        title="Click to view full photo"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          const ph = e.currentTarget.parentElement?.querySelector('.listing-thumb-placeholder');
+                          if (ph) (ph as HTMLElement).style.display = 'flex';
+                        }}
+                      />
+                    ) : null}
+
+                    <div
+                      className="listing-thumb-placeholder"
+                      style={{ display: item.imageUrl ? 'none' : 'flex' }}
+                    >
+                      <span className="text-3xl mb-1">{catMeta.icon}</span>
+                      <span className="font-semibold">{catMeta.label}</span>
+                    </div>
 
                     <div className="media-overlay-tags">
                       <StatusBadge status={item.status} type="listing" />
@@ -874,6 +901,24 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
               </div>
             </div>
 
+            {selectedOverdueListing.imageUrl && (
+              <div className="flex items-center gap-3 p-2 bg-slate-100 rounded-lg border border-slate-200">
+                <img
+                  src={selectedOverdueListing.imageUrl}
+                  alt={selectedOverdueListing.foodName}
+                  className="w-16 h-16 object-cover rounded-md shadow-sm"
+                />
+                <div>
+                  <div className="font-bold text-slate-800 text-sm">
+                    {selectedOverdueListing.foodName}
+                  </div>
+                  <div className="text-xs text-muted">
+                    {selectedOverdueListing.remainingQuantityKg} kg remaining
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm space-y-1">
               <div>
                 <strong>Current Food Condition:</strong>{' '}
@@ -969,6 +1014,24 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
               </div>
             </div>
 
+            {selectedListingForWaste.imageUrl && (
+              <div className="flex items-center gap-3 p-2 bg-slate-100 rounded-lg border border-slate-200">
+                <img
+                  src={selectedListingForWaste.imageUrl}
+                  alt={selectedListingForWaste.foodName}
+                  className="w-16 h-16 object-cover rounded-md shadow-sm"
+                />
+                <div>
+                  <div className="font-bold text-slate-800 text-sm">
+                    {selectedListingForWaste.foodName}
+                  </div>
+                  <div className="text-xs text-muted">
+                    {selectedListingForWaste.remainingQuantityKg} kg surplus
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="form-group">
               <label className="form-label font-semibold">Processing Stream *</label>
               <select
@@ -1021,6 +1084,31 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
               >
                 {transferringWaste ? 'Routing...' : 'Confirm Waste Dispatch'}
               </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* PHOTO ENLARGEMENT / INSPECTION MODAL */}
+      <Modal
+        isOpen={Boolean(previewPhotoModal)}
+        onClose={() => setPreviewPhotoModal(null)}
+        title={previewPhotoModal?.title || 'Food Photo'}
+      >
+        {previewPhotoModal && (
+          <div className="photo-preview-modal-body p-2 text-center">
+            <div className="rounded-xl overflow-hidden bg-slate-900 max-h-[70vh] flex items-center justify-center mb-3">
+              <img
+                src={previewPhotoModal.url}
+                alt={previewPhotoModal.title}
+                className="max-w-full max-h-[65vh] object-contain"
+              />
+            </div>
+            <div className="flex items-center justify-between text-xs text-slate-600 px-1">
+              <span className="font-semibold text-slate-800">{previewPhotoModal.title}</span>
+              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600">
+                {previewPhotoModal.category}
+              </span>
             </div>
           </div>
         )}
