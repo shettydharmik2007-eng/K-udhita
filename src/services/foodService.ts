@@ -107,24 +107,116 @@ export async function compressAndOptimizeImage(
   });
 }
 
+const cloudinaryCloudName = (import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '').trim();
+const cloudinaryUploadPreset = (import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || '').trim();
+
+export const isCloudinaryConfigured = Boolean(
+  cloudinaryCloudName &&
+  cloudinaryCloudName !== 'your_cloudinary_cloud_name' &&
+  cloudinaryUploadPreset &&
+  cloudinaryUploadPreset !== 'your_unsigned_upload_preset'
+);
+
 /**
- * Uploads a food photo to Firebase Storage with real-time percentage progress callback.
- * Returns the public HTTPS download URL.
+ * Uploads an image to Cloudinary using an unsigned upload preset.
+ * Provides real-time percentage progress and returns the public HTTPS secure_url.
+ */
+export async function uploadToCloudinary(
+  fileBlob: Blob,
+  fileName: string,
+  onProgress?: (percent: number) => void
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const url = `https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudinaryCloudName)}/image/upload`;
+
+    xhr.open('POST', url, true);
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total > 0) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          onProgress(percent);
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      try {
+        const response = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300 && response.secure_url) {
+          if (onProgress) onProgress(100);
+          console.info(`[Cloudinary Upload] Food photo successfully hosted: ${response.secure_url}`);
+          resolve(response.secure_url);
+        } else {
+          const rawMsg = response.error?.message || xhr.statusText || 'Upload failed';
+          console.error(`[Cloudinary Error] Code: ${xhr.status} | Message: ${rawMsg}`);
+          let userHint = rawMsg;
+          if (rawMsg.toLowerCase().includes('whitelisted for unsigned')) {
+            userHint = `Cloudinary preset "${cloudinaryUploadPreset}" is set to Signed. In Cloudinary Console → Settings → Upload → Upload presets, edit "${cloudinaryUploadPreset}" and change Signing Mode to "Unsigned".`;
+          }
+          const err = new Error(userHint);
+          (err as any).code = 'cloudinary/upload-failed';
+          reject(err);
+        }
+      } catch (_) {
+        const err = new Error(`Invalid server response from Cloudinary (HTTP ${xhr.status})`);
+        (err as any).code = 'cloudinary/parse-error';
+        reject(err);
+      }
+    };
+
+    xhr.onerror = () => {
+      console.error('[Cloudinary Error] Network request failed');
+      const err = new Error('Network error uploading food photo to Cloudinary.');
+      (err as any).code = 'cloudinary/network-error';
+      reject(err);
+    };
+
+    xhr.ontimeout = () => {
+      console.error('[Cloudinary Error] Upload timed out after 25s');
+      const err = new Error('Food photo upload to Cloudinary timed out.');
+      (err as any).code = 'cloudinary/timeout';
+      reject(err);
+    };
+
+    xhr.timeout = 25000;
+
+    const formData = new FormData();
+    formData.append('file', fileBlob, fileName);
+    formData.append('upload_preset', cloudinaryUploadPreset);
+    xhr.send(formData);
+  });
+}
+
+/**
+ * Uploads a food photo with real-time percentage progress callback.
+ * Prefers Cloudinary if configured; otherwise uploads to Firebase Storage.
+ * Returns the public HTTPS URL.
  */
 export async function uploadFoodImage(
   file: File,
   onProgress?: (percent: number) => void
 ): Promise<string> {
+  // Optimize image to under 1280px to ensure fast, reliable uploads
+  const optimizedBlob = await compressAndOptimizeImage(file, 1280, 0.85);
+  const cleanName = (file.name || 'food_photo.jpg').replace(/[^a-zA-Z0-9.-]/g, '_');
+
+  // Primary Path: If Cloudinary is configured, use it directly (ideal for free plan without Firebase Blaze)
+  if (isCloudinaryConfigured) {
+    console.info(
+      `[Food Photo Upload] Using Cloudinary (Cloud: "${cloudinaryCloudName}", Preset: "${cloudinaryUploadPreset}")`
+    );
+    return await uploadToCloudinary(optimizedBlob, cleanName, onProgress);
+  }
+
+  // Secondary Path: Firebase Storage
   if (!isFirebaseConfigured || !storage) {
     throw new Error(
-      'Firebase Storage is not configured. Please verify VITE_FIREBASE_STORAGE_BUCKET in your environment settings.'
+      'Image upload is not configured. Please set VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET, or VITE_FIREBASE_STORAGE_BUCKET in your environment settings.'
     );
   }
 
-  // Optimize image to under 1280px to ensure fast, reliable uploads
-  const optimizedBlob = await compressAndOptimizeImage(file, 1280, 0.85);
-
-  const cleanName = (file.name || 'food_photo.jpg').replace(/[^a-zA-Z0-9.-]/g, '_');
   const storageRef = ref(storage, `foodListings/${Date.now()}_${cleanName}`);
 
   // Diagnostic logging: reports bucket name, target path, and payload size without credentials

@@ -173,7 +173,7 @@ export const ImageUpload: React.FC<Props> = ({
               <div className="flex items-center justify-between text-xs font-semibold text-slate-700 mb-1">
                 <span className="flex items-center gap-1.5">
                   <Upload size={13} className="text-emerald animate-bounce" />
-                  <span>Uploading to Firebase Storage...</span>
+                  <span>Uploading food photo...</span>
                 </span>
                 <span>{uploadProgress !== null ? uploadProgress : 0}%</span>
               </div>

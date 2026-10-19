@@ -214,11 +214,11 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
       if (selectedFile) {
         setIsUploadingPhoto(true);
         setPhotoUploadError(null);
-        setUploadProgress('Uploading food photo to Firebase Storage: 0%...');
+        setUploadProgress('Uploading food photo: 0%...');
         try {
           imageUrl = await uploadFoodImage(selectedFile, (percent) => {
             setPhotoUploadProgress(percent);
-            setUploadProgress(`Uploading food photo to Firebase Storage: ${percent}%...`);
+            setUploadProgress(`Uploading food photo: ${percent}%...`);
           });
         } catch (uploadErr: any) {
           console.error('[AddFoodListing] Image upload failed:', uploadErr);
