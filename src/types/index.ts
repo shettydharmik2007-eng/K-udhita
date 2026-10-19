@@ -129,6 +129,7 @@ export interface FoodRequest {
   status: FoodRequestStatus;
   createdAt: any;
   updatedAt?: any;
+  pickedUpAt?: any;
 }
 
 export type WasteCategory =

@@ -7,6 +7,8 @@ import {
   getFoodRequests,
   requestFood,
   updateRequestStatus,
+  parsePickupDeadlineMs,
+  formatTimestamp,
 } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import type {
@@ -90,8 +92,8 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
   const [dietaryFilter, setDietaryFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'deadline' | 'quantity'>('deadline');
 
-  // Filter for My Requests tab
-  const [requestsSubTab, setRequestsSubTab] = useState<'all' | 'accepted' | 'pending' | 'completed' | 'cancelled'>('all');
+  // Filter for My Requests tab: 'active' (pending + accepted), 'completed', 'cancelled', 'all'
+  const [requestsSubTab, setRequestsSubTab] = useState<'active' | 'completed' | 'cancelled' | 'all'>('active');
 
   // Selected Food Listing for Full-Page Details View
   const [selectedListing, setSelectedListing] = useState<FoodListing | null>(null);
@@ -200,22 +202,24 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
     };
   };
 
-  // STRICT FILTERING FOR NGO DONATION (Requirement 2):
-  // - status === 'available' and not collected, donated, cancelled, completed
+  // STRICT FILTERING FOR NGO DONATION (Requirement 1 & 2):
+  // - status === 'available' and not collected, donated, cancelled, completed, expired
   // - foodCondition === 'suitable' (Suitable for Donation)
-  // - deadline has not passed
+  // - deadline has not passed (expired listings disappear)
   // - remainingQuantityKg > 0
   // - NEVER show 'not_suitable' or 'requires_review'
   const suitableAvailableListings = useMemo(() => {
     return listings.filter((item) => {
-      // 1. Availability and quantity
-      const isAvailable = item.status === 'available' && Number(item.remainingQuantityKg) > 0;
+      // 1. Availability and positive remaining quantity
+      const isAvailable =
+        item.status === 'available' &&
+        Number(item.remainingQuantityKg) > 0;
 
       // 2. Food safety certification: strictly suitable for donation
       const isSuitable = item.foodCondition === 'suitable';
 
       // 3. Deadline has not passed
-      const deadlineMs = item.pickupDeadline ? new Date(item.pickupDeadline).getTime() : NaN;
+      const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
       const isNotExpired = isNaN(deadlineMs) || deadlineMs > currentTime;
 
       return isAvailable && isSuitable && isNotExpired;
@@ -289,12 +293,23 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
     (r) => r.status === 'accepted' || r.status === 'completed'
   ).length;
 
-  // Filtered requests for the My Requests tab
+  // Filtered requests for the My Requests tab (Requirement 3):
+  // - 'active': pending and accepted requests awaiting hotel pickup
+  // - 'completed': completed pickups (moves here after hotel confirms pickup)
+  // - 'cancelled': cancelled or declined requests
+  // - 'all': all requests history
   const displayedRequests = useMemo(() => {
     return requests.filter((r) => {
-      if (requestsSubTab === 'all') return true;
-      if (requestsSubTab === 'cancelled') return r.status === 'cancelled' || r.status === 'rejected';
-      return r.status === requestsSubTab;
+      if (requestsSubTab === 'active') {
+        return r.status === 'pending' || r.status === 'accepted';
+      }
+      if (requestsSubTab === 'completed') {
+        return r.status === 'completed';
+      }
+      if (requestsSubTab === 'cancelled') {
+        return r.status === 'cancelled' || r.status === 'rejected';
+      }
+      return true;
     });
   }, [requests, requestsSubTab]);
 
@@ -434,34 +449,6 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
     } catch (err: any) {
       console.error('[NGO Dashboard] Request cancellation failed:', err);
       showNotification('error', 'Cancellation Failed', err.message || 'Could not cancel request');
-    } finally {
-      setActionLoadingId(null);
-    }
-  };
-
-  // Mark Food Collected / Pickup Completed (Requirement 6)
-  const handleMarkCollected = async (req: FoodRequest) => {
-    if (!currentUser) return;
-    if (
-      !window.confirm(
-        `Confirm that you have picked up and received ${req.requestedQuantityKg} kg of ${req.foodName} from ${req.donorOrg}?`
-      )
-    ) {
-      return;
-    }
-
-    setActionLoadingId(req.id);
-    try {
-      await updateRequestStatus(req.id, 'completed', currentUser.uid);
-      showNotification(
-        'success',
-        'Pickup Completed!',
-        `Thank you for redistributing ${req.requestedQuantityKg} kg of surplus food to community shelters!`
-      );
-      await loadDashboardData();
-    } catch (err: any) {
-      console.error('[NGO Dashboard] Collection update failed:', err);
-      showNotification('error', 'Update Failed', err.message || 'Could not complete pickup status');
     } finally {
       setActionLoadingId(null);
     }
@@ -1338,36 +1325,16 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
           ========================================================================= */}
       {activeTab === 'my_requests' && (
         <div className="flex flex-col gap-6">
-          {/* Sub-filter tabs */}
+          {/* Sub-filter tabs (Requirement 3: active, completed, cancelled, all) */}
           <div className="partner-tabs-row">
             <button
               type="button"
-              className={`partner-tab-btn ${requestsSubTab === 'all' ? 'active' : ''}`}
-              onClick={() => setRequestsSubTab('all')}
+              className={`partner-tab-btn ${requestsSubTab === 'active' ? 'active' : ''}`}
+              onClick={() => setRequestsSubTab('active')}
             >
-              <span>All Requests</span>
-              <span className="tab-count-badge">{requests.length}</span>
-            </button>
-
-            <button
-              type="button"
-              className={`partner-tab-btn ${requestsSubTab === 'accepted' ? 'active' : ''}`}
-              onClick={() => setRequestsSubTab('accepted')}
-            >
-              <span>Approved / Confirmed</span>
+              <span>Active Requests</span>
               <span className="tab-count-badge">
-                {requests.filter((r) => r.status === 'accepted').length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              className={`partner-tab-btn ${requestsSubTab === 'pending' ? 'active' : ''}`}
-              onClick={() => setRequestsSubTab('pending')}
-            >
-              <span>Pending Hotel Review</span>
-              <span className="tab-count-badge">
-                {requests.filter((r) => r.status === 'pending').length}
+                {requests.filter((r) => r.status === 'pending' || r.status === 'accepted').length}
               </span>
             </button>
 
@@ -1376,7 +1343,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
               className={`partner-tab-btn ${requestsSubTab === 'completed' ? 'active' : ''}`}
               onClick={() => setRequestsSubTab('completed')}
             >
-              <span>Completed Pickups</span>
+              <span>Completed / History</span>
               <span className="tab-count-badge">
                 {requests.filter((r) => r.status === 'completed').length}
               </span>
@@ -1391,6 +1358,15 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
               <span className="tab-count-badge">
                 {requests.filter((r) => r.status === 'cancelled' || r.status === 'rejected').length}
               </span>
+            </button>
+
+            <button
+              type="button"
+              className={`partner-tab-btn ${requestsSubTab === 'all' ? 'active' : ''}`}
+              onClick={() => setRequestsSubTab('all')}
+            >
+              <span>All History</span>
+              <span className="tab-count-badge">{requests.length}</span>
             </button>
           </div>
 
@@ -1563,7 +1539,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
                         <>
                           <div className="badge-approved-pickup">
                             <CheckCircle2 size={16} />
-                            <span>Approved! Ready for collection at hotel premises.</span>
+                            <span>Approved! Ready for collection. Hotel supervisor will confirm pickup upon handover.</span>
                           </div>
 
                           <div className="flex items-center gap-2">
@@ -1575,27 +1551,23 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
                               disabled={isActionLoading}
                               title="Cancel pickup and release food"
                             >
-                              Cancel
-                            </button>
-
-                            {/* Mark Collected Button */}
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-primary"
-                              onClick={() => handleMarkCollected(req)}
-                              disabled={isActionLoading}
-                            >
-                              <Check size={14} />
-                              <span>Mark Food Collected</span>
+                              Cancel Claim
                             </button>
                           </div>
                         </>
                       )}
 
                       {req.status === 'completed' && (
-                        <div className="flex items-center gap-1.5 text-xs text-emerald-800 font-bold bg-emerald-50 px-3 py-1.5 rounded-md border border-emerald-200">
-                          <CheckCircle2 size={15} className="text-emerald" />
-                          <span>Food Successfully Collected & Distributed to Community (Completed)</span>
+                        <div className="flex flex-col gap-1 text-xs text-emerald-800 font-bold bg-emerald-50 p-2.5 rounded-md border border-emerald-200">
+                          <div className="flex items-center gap-1.5">
+                            <CheckCircle2 size={15} className="text-emerald" />
+                            <span>Food Handover Confirmed by Donor Hotel (Completed)</span>
+                          </div>
+                          {req.pickedUpAt && (
+                            <span className="text-muted font-normal text-xs ml-5">
+                              Picked up on: {formatTimestamp(req.pickedUpAt)}
+                            </span>
+                          )}
                         </div>
                       )}
 

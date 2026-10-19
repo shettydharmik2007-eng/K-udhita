@@ -130,8 +130,12 @@ export async function getWasteCollections(filters?: {
   return list;
 }
 
-// Fetch both transferred waste and hotel surplus marked 'not_suitable'
-// STRICT SAFETY RULE: NEVER include listings marked 'suitable' or 'requires_review'
+import { parsePickupDeadlineMs, syncExpiredFoodListings } from './foodService';
+
+// Fetch both transferred waste and hotel surplus eligible for recycling:
+// 1) Hotel surplus marked 'not_suitable'
+// 2) Expired surplus whose pickup deadline has passed with remaining uncollected food
+// Safe rule: Edible food with an active future deadline remains reserved for human relief
 export async function getAvailableWasteForRecyclers(): Promise<{
   wasteRecords: WasteCollection[];
   unsuitableListings: FoodListing[];
@@ -139,6 +143,9 @@ export async function getAvailableWasteForRecyclers(): Promise<{
   if (!isFirebaseConfigured || !db) {
     return { wasteRecords: [], unsuitableListings: [] };
   }
+
+  // Trigger background expiry sync across active listings
+  void syncExpiredFoodListings();
 
   // 1. Fetch available wasteCollections
   const wasteCol = collection(db, 'wasteCollections');
@@ -152,7 +159,14 @@ export async function getAvailableWasteForRecyclers(): Promise<{
     ...(d.data() as Omit<WasteCollection, 'id'>),
   }));
 
-  // 2. Fetch foodListings marked NOT SUITABLE for donation
+  // Track listings already processed into wasteCollections to prevent duplicates
+  const existingSourceListingIds = new Set(
+    wasteRecords
+      .map((w) => w.sourceListingId)
+      .filter((id): id is string => Boolean(id))
+  );
+
+  // 2. Fetch foodListings
   const listingsCol = collection(db, 'foodListings');
   const listingsSnap = await withTimeout(
     getDocs(query(listingsCol, orderBy('createdAt', 'desc'))),
@@ -164,18 +178,36 @@ export async function getAvailableWasteForRecyclers(): Promise<{
     ...(d.data() as Omit<FoodListing, 'id'>),
   }));
 
-  // Filter listings: STRICTLY only 'not_suitable' and not already transferred or completed
+  const now = Date.now();
+
+  // Filter listings:
+  // - Must have positive remaining quantity
+  // - Not fully collected, transferred, or cancelled
+  // - Not already converted to a wasteCollection record
+  // - Food condition is 'not_suitable' OR status is 'expired' OR deadline has passed
   const unsuitableListings = allListings.filter((item) => {
-    const isUnsuitable = item.foodCondition === 'not_suitable';
     const hasRemaining = Number(item.remainingQuantityKg) > 0;
-    const isAvailable = item.status === 'available' || item.status === 'reserved';
-    return isUnsuitable && hasRemaining && isAvailable;
+    const isAvailableState =
+      item.status !== 'transferred_to_waste' &&
+      item.status !== 'completed' &&
+      item.status !== 'cancelled';
+    const notAlreadyInWaste = !existingSourceListingIds.has(item.id);
+
+    if (!hasRemaining || !isAvailableState || !notAlreadyInWaste) {
+      return false;
+    }
+
+    const isUnsuitable = item.foodCondition === 'not_suitable';
+    const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
+    const isExpired = item.status === 'expired' || (!isNaN(deadlineMs) && deadlineMs <= now);
+
+    return isUnsuitable || isExpired;
   });
 
   return { wasteRecords, unsuitableListings };
 }
 
-// Atomically claim or request collection directly from a hotel listing marked 'not_suitable'
+// Atomically claim or request collection directly from a hotel listing marked 'not_suitable' or 'expired'
 export async function requestCollectionFromListing(
   listing: FoodListing,
   partner: UserProfile,
@@ -196,13 +228,18 @@ export async function requestCollectionFromListing(
 
     const data = snap.data() as FoodListing;
 
-    // Strict safety check: Never process food marked suitable for donation as waste!
-    if (data.foodCondition === 'suitable') {
-      throw new Error('This listing is marked Suitable for Donation and is reserved for human community relief.');
-    }
+    const deadlineMs = parsePickupDeadlineMs(data.pickupDeadline);
+    const isExpired = data.status === 'expired' || (!isNaN(deadlineMs) && deadlineMs <= Date.now());
 
-    if (data.foodCondition === 'requires_review') {
-      throw new Error('This listing requires safety inspection and is not yet released for collection.');
+    // Strict safety check: Never process active donation surplus as waste UNLESS it has expired
+    if (!isExpired) {
+      if (data.foodCondition === 'suitable') {
+        throw new Error('This listing is marked Suitable for Donation and is currently active for community relief.');
+      }
+
+      if (data.foodCondition === 'requires_review') {
+        throw new Error('This listing requires safety inspection and is not yet released for collection.');
+      }
     }
 
     const wasteQty = Number(data.remainingQuantityKg);

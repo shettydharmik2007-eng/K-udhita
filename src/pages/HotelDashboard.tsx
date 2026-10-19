@@ -8,6 +8,8 @@ import {
   updateRequestStatus,
   updateFoodListing,
   transferListingToWaste,
+  formatTimestamp,
+  parsePickupDeadlineMs,
 } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
@@ -26,6 +28,7 @@ import {
   Edit,
   Recycle,
   CheckCircle,
+  CheckCircle2,
   XCircle,
   RefreshCw,
   Calendar,
@@ -169,14 +172,17 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     }
   };
 
+  // Request action loading state (prevents duplicate clicks)
+  const [updatingRequestId, setUpdatingRequestId] = useState<string | null>(null);
+
   // Helper to calculate countdown and overdue status
-  const getDeadlineStatus = (pickupDeadline: string) => {
+  const getDeadlineStatus = (pickupDeadline?: any) => {
     if (!pickupDeadline) {
       return { isOverdue: false, label: 'Flexible', urgency: 'normal' as const };
     }
-    const deadlineTime = new Date(pickupDeadline).getTime();
+    const deadlineTime = parsePickupDeadlineMs(pickupDeadline);
     if (isNaN(deadlineTime)) {
-      return { isOverdue: false, label: pickupDeadline, urgency: 'normal' as const };
+      return { isOverdue: false, label: String(pickupDeadline), urgency: 'normal' as const };
     }
 
     const diffMs = deadlineTime - currentTime;
@@ -185,7 +191,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     if (diffMinutes <= 0) {
       return {
         isOverdue: true,
-        label: 'Overdue (Review Required)',
+        label: `Overdue (Expired ${formatTimestamp(pickupDeadline)})`,
         urgency: 'overdue' as const,
       };
     }
@@ -201,20 +207,30 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     };
   };
 
-  // Request status management
+  // Request status management (Mark as picked up, accept, reject)
   const handleUpdateReqStatus = async (
     requestId: string,
-    listingId: string,
-    newStatus: FoodRequestStatus,
-    _requestedKg: number
+    newStatus: FoodRequestStatus
   ) => {
     if (!currentUser) return;
+    if (updatingRequestId) return; // Prevent concurrent or duplicate actions
+
+    setUpdatingRequestId(requestId);
     try {
       await updateRequestStatus(requestId, newStatus, currentUser.uid);
-      showNotification('success', 'Status Updated', `Request marked as ${newStatus}.`);
-      loadData();
+      const actionMsg =
+        newStatus === 'completed'
+          ? 'Food pickup confirmed! Handover complete.'
+          : newStatus === 'accepted'
+          ? 'Request accepted. Ready for NGO pickup.'
+          : 'Request updated.';
+      showNotification('success', 'Status Updated', actionMsg);
+      await loadData();
     } catch (err: any) {
+      console.error('Failed to update request:', err);
       showNotification('error', 'Action Failed', err.message || 'Failed to update request status');
+    } finally {
+      setUpdatingRequestId(null);
     }
   };
 
@@ -787,20 +803,23 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
         )}
       </div>
 
-      {/* Incoming Requests Section */}
+      {/* Section 1: Active Community Reservations (Requirement 2) */}
       <div className="dashboard-section mt-12">
         <div className="section-header-flex">
           <div>
-            <h2 className="section-title">Incoming Community Requests</h2>
+            <h2 className="section-title flex items-center gap-2">
+              <Clock size={20} className="text-emerald" />
+              <span>Active Community Reservations</span>
+            </h2>
             <p className="section-desc">
-              Surplus food claims submitted by verified shelters, charities, and NGOs.
+              Pending claims and scheduled pickups awaiting physical handover to verified NGOs and charitable trusts.
             </p>
           </div>
         </div>
 
-        {requests.length === 0 ? (
+        {requests.filter((r) => r.status === 'pending' || r.status === 'accepted').length === 0 ? (
           <div className="empty-sub-card">
-            <p>No community food requests received for your listings yet.</p>
+            <p>No active reservations awaiting pickup right now. New claims submitted by NGOs will appear here.</p>
           </div>
         ) : (
           <div className="requests-table-container">
@@ -808,95 +827,194 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
               <thead>
                 <tr>
                   <th>Food Item</th>
-                  <th>Requester / NGO</th>
-                  <th>Quantity Claimed</th>
-                  <th>Pickup Estimate</th>
-                  <th>Status</th>
-                  <th>Actions</th>
+                  <th>NGO / Organization</th>
+                  <th>Reserved Quantity</th>
+                  <th>Request Date</th>
+                  <th>Reservation Status</th>
+                  <th>Confirm Physical Handover</th>
                 </tr>
               </thead>
               <tbody>
-                {requests.map((req) => (
-                  <tr key={req.id}>
-                    <td>
-                      <strong>{req.foodName}</strong>
-                    </td>
-                    <td>
-                      <div>
-                        <strong>{req.requesterOrg}</strong>
-                        <div className="text-muted text-sm">
-                          {req.requesterName} • {req.requesterPhone}
+                {requests
+                  .filter((r) => r.status === 'pending' || r.status === 'accepted')
+                  .map((req) => (
+                    <tr key={req.id}>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          {req.imageUrl ? (
+                            <img
+                              src={req.imageUrl}
+                              alt={req.foodName}
+                              className="w-10 h-10 object-cover rounded shadow-sm flex-shrink-0"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-lg flex-shrink-0">
+                              🍽️
+                            </div>
+                          )}
+                          <div>
+                            <strong>{req.foodName}</strong>
+                            <div className="text-muted text-xs">
+                              Est: {req.pickupTimeEstimate || 'Within window'}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td>
-                      <span className="badge-qty">{req.requestedQuantityKg} kg</span>
-                      <small className="d-block text-muted">~{req.requestedPortions} portions</small>
-                    </td>
-                    <td>
-                      <span className="text-sm">{req.pickupTimeEstimate || 'Flexible'}</span>
-                    </td>
-                    <td>
-                      <StatusBadge status={req.status} type="request" />
-                    </td>
-                    <td>
-                      {req.status === 'pending' && (
-                        <div className="action-button-group">
+                      </td>
+                      <td>
+                        <div>
+                          <strong>{req.requesterOrg}</strong>
+                          <div className="text-muted text-xs">
+                            {req.requesterName} {req.requesterPhone ? `• ${req.requesterPhone}` : ''}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="badge-qty">{req.requestedQuantityKg} kg</span>
+                        <small className="d-block text-muted">~{req.requestedPortions} portions</small>
+                      </td>
+                      <td>
+                        <span className="text-xs text-slate-700">
+                          {formatTimestamp(req.createdAt)}
+                        </span>
+                      </td>
+                      <td>
+                        <StatusBadge status={req.status} type="request" />
+                      </td>
+                      <td>
+                        <div className="action-button-group flex items-center gap-1.5">
+                          {req.status === 'pending' && (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-success"
+                                disabled={updatingRequestId === req.id}
+                                onClick={() => handleUpdateReqStatus(req.id, 'accepted')}
+                                title="Accept request and hold quantity"
+                              >
+                                <CheckCircle size={14} /> Accept
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-outline-danger"
+                                disabled={updatingRequestId === req.id}
+                                onClick={() => handleUpdateReqStatus(req.id, 'rejected')}
+                                title="Decline request and release food"
+                              >
+                                <XCircle size={14} /> Reject
+                              </button>
+                            </>
+                          )}
+
+                          {/* Clear Mark as Picked Up Button (Requirement 2) */}
                           <button
                             type="button"
-                            className="btn btn-sm btn-success"
-                            onClick={() =>
-                              handleUpdateReqStatus(
-                                req.id,
-                                req.listingId,
-                                'accepted',
-                                req.requestedQuantityKg
-                              )
-                            }
+                            className="btn btn-sm btn-primary flex items-center gap-1 font-semibold"
+                            disabled={updatingRequestId === req.id}
+                            onClick={() => handleUpdateReqStatus(req.id, 'completed')}
+                            title="Confirm physical collection by NGO"
                           >
-                            <CheckCircle size={14} /> Accept
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline-danger"
-                            onClick={() =>
-                              handleUpdateReqStatus(
-                                req.id,
-                                req.listingId,
-                                'rejected',
-                                req.requestedQuantityKg
-                              )
-                            }
-                          >
-                            <XCircle size={14} /> Reject
+                            {updatingRequestId === req.id ? (
+                              <>
+                                <div className="spinner-small" />
+                                <span>Confirming...</span>
+                              </>
+                            ) : (
+                              <>
+                                <CheckCircle2 size={14} />
+                                <span>Mark as Picked Up</span>
+                              </>
+                            )}
                           </button>
                         </div>
-                      )}
-                      {req.status === 'accepted' && (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-primary"
-                          onClick={() =>
-                            handleUpdateReqStatus(
-                              req.id,
-                              req.listingId,
-                              'completed',
-                              req.requestedQuantityKg
-                            )
-                          }
-                        >
-                          Mark Picked Up
-                        </button>
-                      )}
-                      {req.status === 'completed' && (
-                        <span className="text-muted text-sm">Transfer Completed</span>
-                      )}
-                      {req.status === 'rejected' && (
-                        <span className="text-muted text-sm">Request Rejected</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Section 2: Pickup History / Completed Pickups (Requirement 4) */}
+      <div className="dashboard-section mt-12">
+        <div className="section-header-flex">
+          <div>
+            <h2 className="section-title flex items-center gap-2">
+              <CheckCircle2 size={20} className="text-emerald" />
+              <span>Pickup History & Completed Handaways</span>
+            </h2>
+            <p className="section-desc">
+              Audit log of surplus meals physically collected and redistributed by partner charitable organizations.
+            </p>
+          </div>
+        </div>
+
+        {requests.filter((r) => r.status === 'completed').length === 0 ? (
+          <div className="empty-sub-card">
+            <p>No completed food pickups recorded yet. Completed collections confirmed by your team will appear here.</p>
+          </div>
+        ) : (
+          <div className="requests-table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Food Item</th>
+                  <th>NGO / Charitable Partner</th>
+                  <th>Quantity Picked Up</th>
+                  <th>Request Date</th>
+                  <th>Handover Date & Time</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {requests
+                  .filter((r) => r.status === 'completed')
+                  .map((req) => (
+                    <tr key={req.id}>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          {req.imageUrl ? (
+                            <img
+                              src={req.imageUrl}
+                              alt={req.foodName}
+                              className="w-10 h-10 object-cover rounded shadow-sm flex-shrink-0"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-lg flex-shrink-0">
+                              🍽️
+                            </div>
+                          )}
+                          <strong>{req.foodName}</strong>
+                        </div>
+                      </td>
+                      <td>
+                        <div>
+                          <strong>{req.requesterOrg}</strong>
+                          <div className="text-muted text-xs">
+                            {req.requesterName} {req.requesterPhone ? `• ${req.requesterPhone}` : ''}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="badge-qty">{req.requestedQuantityKg} kg</span>
+                        <small className="d-block text-muted">~{req.requestedPortions} portions</small>
+                      </td>
+                      <td>
+                        <span className="text-xs text-muted">
+                          {formatTimestamp(req.createdAt)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="text-xs font-semibold text-emerald-800 flex items-center gap-1">
+                          <CheckCircle2 size={13} className="text-emerald" />
+                          {formatTimestamp(req.pickedUpAt || req.updatedAt)}
+                        </span>
+                      </td>
+                      <td>
+                        <StatusBadge status="completed" type="request" />
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>

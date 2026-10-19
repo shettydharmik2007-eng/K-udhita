@@ -10,6 +10,7 @@ import {
   updateRecyclerProfile,
   mapFoodCategoryToWaste,
 } from '../services/wasteService';
+import { parsePickupDeadlineMs, formatTimestamp } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
 import type {
@@ -230,18 +231,22 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
   };
 
   // Helper to format countdown
-  const getDeadlineStatus = (pickupDeadline?: string) => {
+  const getDeadlineStatus = (pickupDeadline?: any) => {
     if (!pickupDeadline) {
       return { isOverdue: false, label: 'Flexible Window', urgency: 'normal' as const };
     }
-    const deadlineTime = new Date(pickupDeadline).getTime();
+    const deadlineTime = parsePickupDeadlineMs(pickupDeadline);
     if (isNaN(deadlineTime)) {
-      return { isOverdue: false, label: pickupDeadline, urgency: 'normal' as const };
+      return { isOverdue: false, label: String(pickupDeadline), urgency: 'normal' as const };
     }
 
     const diffMinutes = Math.round((deadlineTime - currentTime) / (1000 * 60));
     if (diffMinutes <= 0) {
-      return { isOverdue: true, label: 'Expired (Bio-Processing Priority)', urgency: 'overdue' as const };
+      return {
+        isOverdue: true,
+        label: `Expired (${formatTimestamp(pickupDeadline)})`,
+        urgency: 'overdue' as const,
+      };
     }
 
     const hours = Math.floor(diffMinutes / 60);
@@ -259,21 +264,27 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     category: WasteCategory;
     weightKg: number;
     location: string;
-    pickupDeadline?: string;
+    pickupDeadline?: any;
     prepDate?: string;
     prepTime?: string;
     storageCondition?: string;
     foodCondition: string;
     status: string;
+    imageUrl?: string;
+    isExpired?: boolean;
     listing?: FoodListing;
     record?: WasteCollection;
   }
 
   const normalizedAvailableWaste: UnifiedAvailableWaste[] = useMemo(() => {
     const list: UnifiedAvailableWaste[] = [];
+    const now = currentTime;
 
-    // 1. Hotel Listings marked Not Suitable for Donation
+    // 1. Hotel Listings eligible for recycling (unsuitable or expired)
     unsuitableListings.forEach((item) => {
+      const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
+      const isExpired = item.status === 'expired' || (!isNaN(deadlineMs) && deadlineMs <= now);
+
       list.push({
         id: `listing_${item.id}`,
         isListing: true,
@@ -287,7 +298,9 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
         prepTime: item.prepTime,
         storageCondition: item.storageCondition,
         foodCondition: item.foodCondition || 'not_suitable',
-        status: 'Available for Recycler Pickup',
+        status: isExpired ? 'Expired Surplus (Recycle Priority)' : 'Available for Recycler Pickup',
+        imageUrl: item.imageUrl || '',
+        isExpired,
         listing: item,
       });
     });
@@ -310,12 +323,14 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
           storageCondition: record.storageCondition,
           foodCondition: 'not_suitable',
           status: 'Available for Recycler Pickup',
+          imageUrl: record.imageUrl || '',
+          isExpired: true,
           record,
         });
       });
 
     return list;
-  }, [unsuitableListings, wasteRecords]);
+  }, [unsuitableListings, wasteRecords, currentTime]);
 
   // Extract unique locations for filter
   const uniqueLocations = useMemo(() => {
@@ -902,7 +917,26 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                   <div key={item.id} className="recycler-card">
                     {/* Media wrap */}
                     <div className="ngo-card-image-wrap">
-                      <div className="ngo-card-img-placeholder" style={{ background: 'linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 100%)' }}>
+                      {item.imageUrl ? (
+                        <img
+                          src={item.imageUrl}
+                          alt={item.foodName}
+                          className="ngo-card-img"
+                          loading="lazy"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const ph = e.currentTarget.parentElement?.querySelector('.ngo-card-img-placeholder');
+                            if (ph) (ph as HTMLElement).style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        className="ngo-card-img-placeholder"
+                        style={{
+                          background: 'linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 100%)',
+                          display: item.imageUrl ? 'none' : 'flex',
+                        }}
+                      >
                         <span className="text-3xl mb-1">{catMeta.icon}</span>
                         <span className="font-bold text-sm text-teal-800">{catMeta.label}</span>
                       </div>
@@ -914,15 +948,22 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                         </span>
                       </div>
 
-                      {/* Top Right: Not Suitable for Donation Badge (Requirement 2) */}
+                      {/* Top Right: Expired / Not Suitable badge */}
                       <div className="ngo-card-badge-top-right">
-                        <span className="recycler-badge-unsuitable">
-                          <ShieldAlert size={13} />
-                          <span>Not Suitable for Donation</span>
-                        </span>
+                        {item.isExpired ? (
+                          <span className="badge-danger text-xs font-bold px-2 py-0.5 rounded shadow-sm flex items-center gap-1 bg-red-100 text-red-800">
+                            <ShieldAlert size={13} />
+                            <span>Expired Surplus</span>
+                          </span>
+                        ) : (
+                          <span className="recycler-badge-unsuitable">
+                            <ShieldAlert size={13} />
+                            <span>Not Suitable for Donation</span>
+                          </span>
+                        )}
                       </div>
 
-                      {/* Bottom Banner: Pickup Window */}
+                      {/* Bottom Banner: Pickup Window / Expiry time */}
                       <div className="ngo-card-badge-bottom">
                         <span className={`countdown-badge ${deadline.urgency}`}>
                           <Clock size={12} />
@@ -1547,9 +1588,28 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
               <ShieldAlert size={24} className="text-red-600 flex-shrink-0" />
               <div className="text-xs text-red-900">
                 <strong>Certified Not Suitable for Human Donation:</strong>
-                <div>This batch has exceeded safety holding times and is designated strictly for biogas conversion, composting, or fertilizer processing.</div>
+                <div>This batch has exceeded safety holding times or donation deadlines and is designated strictly for biogas conversion, composting, or organic recycling.</div>
               </div>
             </div>
+
+            {/* Food Image Preview if present */}
+            {(selectedItemForDetails.listing?.imageUrl || selectedItemForDetails.record?.imageUrl) && (
+              <div className="flex items-center gap-3 p-2 bg-slate-100 rounded-lg border border-slate-200">
+                <img
+                  src={selectedItemForDetails.listing?.imageUrl || selectedItemForDetails.record?.imageUrl}
+                  alt={selectedItemForDetails.listing?.foodName || selectedItemForDetails.record?.foodName}
+                  className="w-16 h-16 object-cover rounded-md shadow-sm"
+                />
+                <div>
+                  <div className="font-bold text-slate-800 text-sm">
+                    {selectedItemForDetails.listing?.foodName || selectedItemForDetails.record?.foodName}
+                  </div>
+                  <div className="text-xs text-muted">
+                    {selectedItemForDetails.listing?.remainingQuantityKg || selectedItemForDetails.record?.quantityKg} kg organic surplus
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Spec Matrix */}
             <div className="ngo-modal-info-grid">
