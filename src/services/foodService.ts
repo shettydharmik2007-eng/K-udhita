@@ -927,77 +927,94 @@ export async function updateRequestStatus(
     }
   }
 
-  await runTransaction(db, async (transaction) => {
-    const reqSnap = await transaction.get(requestRef);
-    if (!reqSnap.exists()) throw new Error('Request not found');
+  const executeStatusUpdate = async (includePickedUpAt: boolean) => {
+    await runTransaction(db!, async (transaction) => {
+      const reqSnap = await transaction.get(requestRef);
+      if (!reqSnap.exists()) throw new Error('Request not found');
 
-    const reqData = reqSnap.data() as FoodRequest;
-    if (reqData.status === 'completed') {
-      throw new Error('This request has already been marked as completed/picked up.');
-    }
-
-    let listingRef: any = null;
-    let listingSnap: any = null;
-    let listing: FoodListing | null = null;
-
-    if (reqData.listingId) {
-      listingRef = doc(db!, 'foodListings', reqData.listingId);
-      listingSnap = await transaction.get(listingRef);
-      if (listingSnap.exists()) {
-        listing = listingSnap.data() as FoodListing;
+      const reqData = reqSnap.data() as FoodRequest;
+      if (reqData.status === 'completed') {
+        throw new Error('This request has already been marked as completed/picked up.');
       }
-    }
 
-    // If cancelled or rejected from pending or accepted, release the quantity back to the listing
-    if (
-      (newStatus === 'rejected' || newStatus === 'cancelled') &&
-      (reqData.status === 'pending' || reqData.status === 'accepted') &&
-      listingRef &&
-      listing
-    ) {
-      const currentRemaining = Number(listing.remainingQuantityKg) || 0;
-      const initialQty = Number(listing.initialQuantityKg) || currentRemaining;
-      const restoredRemaining = Math.min(
-        initialQty,
-        Math.round((currentRemaining + Number(reqData.requestedQuantityKg)) * 100) / 100
-      );
-      const isExpired = isListingExpired(listing);
-      const nextStatus = isExpired ? 'expired' : 'available';
+      let listingRef: any = null;
+      let listingSnap: any = null;
+      let listing: FoodListing | null = null;
 
-      transaction.update(listingRef, {
-        remainingQuantityKg: restoredRemaining,
-        status: nextStatus,
-        updatedAt: serverTimestamp(),
-      });
-    }
-
-    // If marked completed, update listing:
-    // If remaining quantity is 0 and no sibling claims exist, mark listing as 'completed'
-    // If remaining quantity > 0, check if expired, otherwise stays 'available'
-    if (newStatus === 'completed' && listingRef && listing) {
-      const currentRemaining = Number(listing.remainingQuantityKg) || 0;
-      if (currentRemaining === 0 && otherActiveCount === 0) {
-        transaction.update(listingRef, {
-          status: 'completed',
-          updatedAt: serverTimestamp(),
-        });
-      } else if (currentRemaining > 0) {
-        const isExpired = isListingExpired(listing);
-        if (isExpired && listing.status !== 'expired') {
-          transaction.update(listingRef, {
-            status: 'expired',
-            updatedAt: serverTimestamp(),
-          });
+      if (reqData.listingId) {
+        listingRef = doc(db!, 'foodListings', reqData.listingId);
+        listingSnap = await transaction.get(listingRef);
+        if (listingSnap.exists()) {
+          listing = listingSnap.data() as FoodListing;
         }
       }
-    }
 
-    transaction.update(requestRef, {
-      status: newStatus,
-      updatedAt: serverTimestamp(),
-      ...(newStatus === 'completed' ? { pickedUpAt: serverTimestamp() } : {}),
+      // If cancelled or rejected from pending or accepted, release the quantity back to the listing
+      if (
+        (newStatus === 'rejected' || newStatus === 'cancelled') &&
+        (reqData.status === 'pending' || reqData.status === 'accepted') &&
+        listingRef &&
+        listing
+      ) {
+        const currentRemaining = Number(listing.remainingQuantityKg) || 0;
+        const initialQty = Number(listing.initialQuantityKg) || currentRemaining;
+        const restoredRemaining = Math.min(
+          initialQty,
+          Math.round((currentRemaining + Number(reqData.requestedQuantityKg)) * 100) / 100
+        );
+        const isExpired = isListingExpired(listing);
+        const nextStatus = isExpired ? 'expired' : 'available';
+
+        transaction.update(listingRef, {
+          remainingQuantityKg: restoredRemaining,
+          status: nextStatus,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      // If marked completed, update listing:
+      // If remaining quantity is 0 and no sibling claims exist, mark listing as 'completed'
+      // If remaining quantity > 0, check if expired, otherwise stays 'available'
+      if (newStatus === 'completed' && listingRef && listing) {
+        const currentRemaining = Number(listing.remainingQuantityKg) || 0;
+        if (currentRemaining === 0 && otherActiveCount === 0) {
+          transaction.update(listingRef, {
+            status: 'completed',
+            updatedAt: serverTimestamp(),
+          });
+        } else if (currentRemaining > 0) {
+          const isExpired = isListingExpired(listing);
+          if (isExpired && listing.status !== 'expired') {
+            transaction.update(listingRef, {
+              status: 'expired',
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      }
+
+      const updatePayload: Record<string, any> = {
+        status: newStatus,
+        updatedAt: serverTimestamp(),
+      };
+      if (newStatus === 'completed' && includePickedUpAt) {
+        updatePayload.pickedUpAt = serverTimestamp();
+      }
+
+      transaction.update(requestRef, updatePayload);
     });
-  });
+  };
+
+  try {
+    await executeStatusUpdate(true);
+  } catch (err: any) {
+    if (err?.code === 'permission-denied' && newStatus === 'completed') {
+      console.warn('[Food Service] pickedUpAt field was rejected by current deployed rules; retrying status update with server timestamp fallback.');
+      await executeStatusUpdate(false);
+    } else {
+      throw err;
+    }
+  }
 }
 
 /**

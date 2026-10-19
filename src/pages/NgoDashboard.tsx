@@ -39,6 +39,7 @@ import {
   XCircle,
   LogIn,
   ArrowLeft,
+  Recycle,
 } from 'lucide-react';
 
 interface Props {
@@ -948,6 +949,16 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
           >
             <RefreshCw size={16} className={refreshing ? 'spin-icon' : ''} />
             <span>Refresh</span>
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-outline flex items-center gap-1.5 border-teal-500/30 text-teal-800 hover:bg-teal-50"
+            onClick={() => onNavigate('partner-dashboard')}
+            title="Navigate to Circular Organic Waste & Recycling Panel"
+          >
+            <Recycle size={16} className="text-teal-600" />
+            <span>Recycle Panel</span>
           </button>
 
           {!isAuthenticated ? (

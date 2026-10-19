@@ -14,6 +14,7 @@ interface AuthContextType {
   isDonor: boolean;
   isRequester: boolean;
   isWastePartner: boolean;
+  isAdmin: boolean;
   refreshProfile: (knownProfile?: UserProfile) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -73,9 +74,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const role = userProfile?.role || null;
-  const isDonor = role === 'donor';
-  const isRequester = role === 'requester';
-  const isWastePartner = role === 'waste_partner';
+  const isAdmin = role === 'admin';
+  const isDonor = role === 'donor' || isAdmin;
+  const isRequester = role === 'requester' || isAdmin;
+  const isWastePartner = role === 'waste_partner' || isAdmin;
 
   return (
     <AuthContext.Provider
@@ -88,6 +90,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isDonor,
         isRequester,
         isWastePartner,
+        isAdmin,
         refreshProfile,
         logout,
       }}

@@ -39,6 +39,7 @@ import {
   Phone,
   Check,
   Building,
+  HeartHandshake,
 } from 'lucide-react';
 
 interface Props {
@@ -447,6 +448,11 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
       return;
     }
 
+    if (!isWastePartner && userProfile.role !== 'admin') {
+      showNotification('warning', 'Recycler Access Only', 'Waste collections can only be requested by registered Bio-Processing and Organic Waste Recyclers.');
+      return;
+    }
+
     if (!selectedItemForDetails) return;
 
     setSubmittingRequest(true);
@@ -737,6 +743,16 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
         </div>
 
         <div className="dashboard-header-actions">
+          <button
+            type="button"
+            className="btn btn-outline flex items-center gap-1.5 border-emerald-500/30 text-emerald-800 hover:bg-emerald-50"
+            onClick={() => onNavigate('my-requests')}
+            title="Navigate to NGO Hunger Relief & Food Surplus Panel"
+          >
+            <HeartHandshake size={16} className="text-emerald-600" />
+            <span>NGO Panel</span>
+          </button>
+
           <button
             type="button"
             className="btn btn-outline"

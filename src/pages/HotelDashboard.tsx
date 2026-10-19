@@ -230,21 +230,6 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
 
     setUpdatingRequestId(requestId);
 
-    // Optimistic UI state update so dashboard updates instantaneously
-    const targetReq = requests.find((r) => r.id === requestId);
-    setRequests((prev) =>
-      prev.map((r) =>
-        r.id === requestId
-          ? {
-              ...r,
-              status: newStatus,
-              updatedAt: new Date(),
-              ...(newStatus === 'completed' ? { pickedUpAt: new Date() } : {}),
-            }
-          : r
-      )
-    );
-
     try {
       await updateRequestStatus(requestId, newStatus, currentUser.uid);
       const actionMsg =
@@ -258,7 +243,6 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     } catch (err: any) {
       console.error('Failed to update request:', err);
       showNotification('error', 'Action Failed', err.message || 'Failed to update request status');
-      // Revert optimistic update
       await loadData();
     } finally {
       setUpdatingRequestId(null);
