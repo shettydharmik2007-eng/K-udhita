@@ -167,15 +167,15 @@ export const ImageUpload: React.FC<Props> = ({
             )}
           </div>
 
-          {/* Upload Progress Bar (when active) */}
-          {(isUploading || (uploadProgress !== null && uploadProgress > 0)) && (
+          {/* Upload Progress Bar (when active and no error) */}
+          {isUploading && !uploadError && (
             <div className="upload-progress-container mt-3">
               <div className="flex items-center justify-between text-xs font-semibold text-slate-700 mb-1">
                 <span className="flex items-center gap-1.5">
                   <Upload size={13} className="text-emerald animate-bounce" />
                   <span>Uploading to Firebase Storage...</span>
                 </span>
-                <span>{uploadProgress || 0}%</span>
+                <span>{uploadProgress !== null ? uploadProgress : 0}%</span>
               </div>
               <div className="upload-progress-track">
                 <div

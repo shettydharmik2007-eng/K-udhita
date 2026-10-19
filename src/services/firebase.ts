@@ -3,14 +3,28 @@ import { getAuth, type Auth } from 'firebase/auth';
 import { getFirestore, setLogLevel, type Firestore } from 'firebase/firestore';
 import { getStorage, type FirebaseStorage } from 'firebase/storage';
 
+export function normalizeStorageBucket(raw?: string): string {
+  if (!raw || typeof raw !== 'string') return '';
+  return raw
+    .trim()
+    .replace(/^["']|["']$/g, '') // strip quotes
+    .replace(/^gs:\/\//i, '')    // strip gs:// prefix
+    .replace(/\/+$/, '');        // strip trailing slashes
+}
+
+const rawBucket = import.meta.env.VITE_FIREBASE_STORAGE_BUCKET;
+const cleanBucket = normalizeStorageBucket(rawBucket);
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  storageBucket: cleanBucket || undefined,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
+
+export const configuredStorageBucket = cleanBucket;
 
 // Check if credentials are properly set and not default placeholders
 export const isFirebaseConfigured: boolean = Boolean(
@@ -43,8 +57,19 @@ if (isFirebaseConfigured) {
     app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-    storage = getStorage(app);
+
+    // Explicitly pass the bucket URL to getStorage to avoid default ambiguity
+    const bucketUrl = cleanBucket ? `gs://${cleanBucket}` : undefined;
+    storage = getStorage(app, bucketUrl);
+
+    // Set fast retry timeout (8s instead of default 10min) so 404/CORS errors fail fast
+    storage.maxUploadRetryTime = 8000;
+    storage.maxOperationRetryTime = 8000;
+
     setLogLevel('error');
+    console.info(
+      `[Firebase Config] Project: "${firebaseConfig.projectId}" | Storage Bucket: "${cleanBucket || '(not configured)'}"`
+    );
   } catch (err) {
     console.warn('Firebase initialization error:', err);
   }

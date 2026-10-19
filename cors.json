@@ -1,0 +1,20 @@
+[
+  {
+    "origin": [
+      "https://k-udhita.onrender.com",
+      "http://localhost:5173",
+      "http://localhost:4173",
+      "http://localhost:3000"
+    ],
+    "method": ["GET", "PUT", "POST", "DELETE", "HEAD", "OPTIONS"],
+    "responseHeader": [
+      "Content-Type",
+      "Authorization",
+      "Content-Length",
+      "User-Agent",
+      "x-goog-resumable",
+      "x-firebase-storage-version"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

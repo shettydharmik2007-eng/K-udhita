@@ -221,9 +221,12 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
             setUploadProgress(`Uploading food photo to Firebase Storage: ${percent}%...`);
           });
         } catch (uploadErr: any) {
-          console.error('Image upload failed:', uploadErr);
+          console.error('[AddFoodListing] Image upload failed:', uploadErr);
+          console.error(`[AddFoodListing] Firebase Storage Error Code: ${uploadErr?.code || 'unknown'}`);
+          console.error(`[AddFoodListing] Firebase Storage Error Message: ${uploadErr?.message || uploadErr}`);
           const errorMsg = uploadErr.message || 'Firebase Storage upload failed';
           setIsUploadingPhoto(false);
+          setPhotoUploadProgress(null);
           setPhotoUploadError(errorMsg);
           setErrorMessage(
             `Food photo upload failed: ${errorMsg}. Please retry or remove the photo to publish without one.`

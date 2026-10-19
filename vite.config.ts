@@ -5,9 +5,9 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   preview: {
-    allowedHosts: ['k-udhita.onrender.com', '.onrender.com'],
+    allowedHosts: ['k-udhita.onrender.com', '.k-udhita.onrender.com'],
   },
   server: {
-    allowedHosts: ['k-udhita.onrender.com', '.onrender.com'],
+    allowedHosts: ['k-udhita.onrender.com', '.k-udhita.onrender.com'],
   },
 })

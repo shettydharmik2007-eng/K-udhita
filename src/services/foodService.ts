@@ -127,11 +127,36 @@ export async function uploadFoodImage(
   const cleanName = (file.name || 'food_photo.jpg').replace(/[^a-zA-Z0-9.-]/g, '_');
   const storageRef = ref(storage, `foodListings/${Date.now()}_${cleanName}`);
 
+  // Diagnostic logging: reports bucket name, target path, and payload size without credentials
+  console.info(
+    `[Firebase Storage Upload] Target Bucket: "${storageRef.bucket}" | Path: "${storageRef.fullPath}" | Size: ${optimizedBlob.size} bytes`
+  );
+
   return new Promise((resolve, reject) => {
+    let completed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const uploadTask = uploadBytesResumable(storageRef, optimizedBlob, {
       contentType: 'image/jpeg',
       cacheControl: 'public, max-age=31536000',
     });
+
+    // Timeout guard: If the upload is stuck at 0% for more than 10 seconds (e.g. preflight 404 / CORS retry loop),
+    // cancel the upload and report the exact diagnostic error instead of hanging for 10 minutes.
+    timer = setTimeout(() => {
+      if (!completed && uploadTask.snapshot.bytesTransferred === 0) {
+        try {
+          uploadTask.cancel();
+        } catch (_) {
+          // ignore error on cancel
+        }
+        const errorMsg = `Upload timed out at 0% connecting to bucket "${storageRef.bucket}". Firebase Storage preflight returned 404/CORS. Please check Firebase Console → Storage → Files to verify that Cloud Storage is activated and that the bucket name matches gs://${storageRef.bucket}.`;
+        console.error(`[Firebase Storage Diagnostic] ${errorMsg}`);
+        const timeoutErr = new Error(errorMsg);
+        (timeoutErr as any).code = 'storage/preflight-not-found';
+        reject(timeoutErr);
+      }
+    }, 10000);
 
     uploadTask.on(
       'state_changed',
@@ -146,28 +171,47 @@ export async function uploadFoodImage(
         }
       },
       (error) => {
-        console.error('Firebase Storage upload error:', error);
+        completed = true;
+        if (timer) clearTimeout(timer);
+
+        // Explicit error logging: reports bucket name, error code, and error message
+        console.error(
+          `[Firebase Storage Error] Bucket: "${storageRef.bucket}" | Code: "${error.code}" | Message: "${error.message}"`
+        );
+        if ((error as any).serverResponse) {
+          console.error(`[Firebase Storage Server Response] ${(error as any).serverResponse}`);
+        }
+
         let userMsg = error.message;
         if (error.code === 'storage/unauthorized') {
           userMsg =
             'Storage permission denied. You must be signed in as a registered donor to upload food photos.';
         } else if (error.code === 'storage/canceled') {
-          userMsg = 'Photo upload was canceled.';
+          userMsg = `Photo upload was canceled or timed out for bucket "${storageRef.bucket}".`;
         } else if (error.code === 'storage/quota-exceeded') {
           userMsg = 'Firebase Storage quota exceeded. Please contact administrator.';
-        } else if (error.code === 'storage/unknown') {
-          userMsg = 'Storage upload failed. Please verify network connection or Firebase Storage bucket CORS.';
+        } else if (error.code === 'storage/unknown' || error.code === 'storage/retry-limit-exceeded') {
+          userMsg = `Storage upload failed for bucket "${storageRef.bucket}". The Storage bucket may not be initialized in Firebase Console or the bucket name is incorrect (preflight returned 404 Not Found / CORS). Check Firebase Console → Storage → Files.`;
+        } else {
+          userMsg = `Storage error (${error.code || 'unknown'}): ${error.message} (Bucket: ${storageRef.bucket})`;
         }
         const err = new Error(userMsg);
         (err as any).code = error.code;
         reject(err);
       },
       async () => {
+        completed = true;
+        if (timer) clearTimeout(timer);
         try {
           const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
           if (onProgress) onProgress(100);
+          console.info(`[Firebase Storage Upload] Success for bucket "${storageRef.bucket}". URL obtained.`);
           resolve(downloadUrl);
-        } catch (urlErr) {
+        } catch (urlErr: any) {
+          console.error(
+            `[Firebase Storage Error] Failed to get download URL from bucket "${storageRef.bucket}":`,
+            urlErr?.message || urlErr
+          );
           reject(urlErr);
         }
       }

@@ -151,9 +151,12 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
             setPhotoUploadProgress(pct);
           });
         } catch (uploadErr: any) {
-          console.error('Image upload failed during edit:', uploadErr);
+          console.error('[EditFoodListing] Image upload failed during edit:', uploadErr);
+          console.error(`[EditFoodListing] Firebase Storage Error Code: ${uploadErr?.code || 'unknown'}`);
+          console.error(`[EditFoodListing] Firebase Storage Error Message: ${uploadErr?.message || uploadErr}`);
           const errorMsg = uploadErr.message || 'Firebase Storage upload failed';
           setIsUploadingPhoto(false);
+          setPhotoUploadProgress(null);
           setPhotoUploadError(errorMsg);
           setErrorMessage(
             `Food photo upload failed: ${errorMsg}. Please retry or remove photo to save changes.`
