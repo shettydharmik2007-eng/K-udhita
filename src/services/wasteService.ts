@@ -130,7 +130,7 @@ export async function getWasteCollections(filters?: {
   return list;
 }
 
-import { parsePickupDeadlineMs, syncExpiredFoodListings } from './foodService';
+import { isListingExpired, parsePickupDeadlineMs, syncExpiredFoodListings } from './foodService';
 
 // Fetch both transferred waste and hotel surplus eligible for recycling:
 // 1) Hotel surplus marked 'not_suitable'
@@ -150,8 +150,8 @@ export async function getAvailableWasteForRecyclers(): Promise<{
   // 1. Fetch available wasteCollections
   const wasteCol = collection(db, 'wasteCollections');
   const wasteSnap = await withTimeout(
-    getDocs(query(wasteCol, orderBy('createdAt', 'desc'))),
-    5000,
+    getDocs(wasteCol),
+    10000,
     'Waste query timed out'
   );
   const wasteRecords: WasteCollection[] = wasteSnap.docs.map((d) => ({
@@ -159,18 +159,25 @@ export async function getAvailableWasteForRecyclers(): Promise<{
     ...(d.data() as Omit<WasteCollection, 'id'>),
   }));
 
+  // Sort waste records in-memory by createdAt descending
+  wasteRecords.sort((a, b) => {
+    const timeA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+    const timeB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+    return timeB - timeA;
+  });
+
   // Track listings already processed into wasteCollections to prevent duplicates
   const existingSourceListingIds = new Set(
     wasteRecords
-      .map((w) => w.sourceListingId)
-      .filter((id): id is string => Boolean(id))
+      .filter((w) => w.status !== 'cancelled' && Boolean(w.sourceListingId))
+      .map((w) => w.sourceListingId!)
   );
 
   // 2. Fetch foodListings
   const listingsCol = collection(db, 'foodListings');
   const listingsSnap = await withTimeout(
-    getDocs(query(listingsCol, orderBy('createdAt', 'desc'))),
-    5000,
+    getDocs(listingsCol),
+    10000,
     'Listings query timed out'
   );
   const allListings: FoodListing[] = listingsSnap.docs.map((d) => ({
@@ -182,26 +189,31 @@ export async function getAvailableWasteForRecyclers(): Promise<{
 
   // Filter listings:
   // - Must have positive remaining quantity
-  // - Not fully collected, transferred, or cancelled
-  // - Not already converted to a wasteCollection record
+  // - Fully collected food (status === 'completed' or remaining <= 0) must NEVER be recycled
   // - Food condition is 'not_suitable' OR status is 'expired' OR deadline has passed
   const unsuitableListings = allListings.filter((item) => {
     const hasRemaining = Number(item.remainingQuantityKg) > 0;
-    const isAvailableState =
-      item.status !== 'transferred_to_waste' &&
-      item.status !== 'completed' &&
-      item.status !== 'cancelled';
+    const isCompletedOrGone =
+      item.status === 'completed' ||
+      item.status === 'transferred_to_waste' ||
+      item.status === 'cancelled';
     const notAlreadyInWaste = !existingSourceListingIds.has(item.id);
 
-    if (!hasRemaining || !isAvailableState || !notAlreadyInWaste) {
+    if (!hasRemaining || isCompletedOrGone || !notAlreadyInWaste) {
       return false;
     }
 
     const isUnsuitable = item.foodCondition === 'not_suitable';
-    const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
-    const isExpired = item.status === 'expired' || (!isNaN(deadlineMs) && deadlineMs <= now);
+    const isExpired = isListingExpired(item, now);
 
     return isUnsuitable || isExpired;
+  });
+
+  // Sort unsuitable/expired listings in-memory by createdAt descending
+  unsuitableListings.sort((a, b) => {
+    const timeA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+    const timeB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+    return timeB - timeA;
   });
 
   return { wasteRecords, unsuitableListings };
@@ -228,8 +240,7 @@ export async function requestCollectionFromListing(
 
     const data = snap.data() as FoodListing;
 
-    const deadlineMs = parsePickupDeadlineMs(data.pickupDeadline);
-    const isExpired = data.status === 'expired' || (!isNaN(deadlineMs) && deadlineMs <= Date.now());
+    const isExpired = isListingExpired(data);
 
     // Strict safety check: Never process active donation surplus as waste UNLESS it has expired
     if (!isExpired) {
@@ -244,7 +255,7 @@ export async function requestCollectionFromListing(
 
     const wasteQty = Number(data.remainingQuantityKg);
     if (wasteQty <= 0 || data.status === 'transferred_to_waste' || data.status === 'completed') {
-      throw new Error('This waste batch has already been transferred or claimed by another facility.');
+      throw new Error('This food listing has already been transferred, claimed, or fully completed.');
     }
 
     // Atomically transfer listing out of donation circulation

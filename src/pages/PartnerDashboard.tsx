@@ -10,7 +10,7 @@ import {
   updateRecyclerProfile,
   mapFoodCategoryToWaste,
 } from '../services/wasteService';
-import { parsePickupDeadlineMs, formatTimestamp } from '../services/foodService';
+import { parsePickupDeadlineMs, formatTimestamp, isListingExpired } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
 import type {
@@ -205,25 +205,32 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
   useEffect(() => {
     if (!isFirebaseConfigured) return;
     let ignore = false;
-    getAvailableWasteForRecyclers()
-      .then((availableData) => {
-        if (!ignore) {
-          setWasteRecords(availableData.wasteRecords);
-          setUnsuitableListings(availableData.unsuitableListings);
-          setLoading(false);
-        }
-      })
-      .catch((err: any) => {
-        if (!ignore) {
-          console.error('[Recycler Dashboard] Data load failed:', err);
-          showNotification('error', 'Sync Failed', err.message || 'Could not load waste records');
-          setLoading(false);
-        }
-      });
+
+    const fetchWaste = () => {
+      getAvailableWasteForRecyclers()
+        .then((availableData) => {
+          if (!ignore) {
+            setWasteRecords(availableData.wasteRecords);
+            setUnsuitableListings(availableData.unsuitableListings);
+            setLoading(false);
+          }
+        })
+        .catch((err: any) => {
+          if (!ignore) {
+            console.error('[Recycler Dashboard] Data load failed:', err);
+            setLoading(false);
+          }
+        });
+    };
+
+    fetchWaste();
+    const interval = setInterval(fetchWaste, 20000);
+
     return () => {
       ignore = true;
+      clearInterval(interval);
     };
-  }, [currentUser, showNotification]);
+  }, [currentUser]);
 
   const handleManualRefresh = () => {
     setRefreshing(true);
@@ -282,8 +289,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
 
     // 1. Hotel Listings eligible for recycling (unsuitable or expired)
     unsuitableListings.forEach((item) => {
-      const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
-      const isExpired = item.status === 'expired' || (!isNaN(deadlineMs) && deadlineMs <= now);
+      const isExpired = isListingExpired(item, now);
 
       list.push({
         id: `listing_${item.id}`,

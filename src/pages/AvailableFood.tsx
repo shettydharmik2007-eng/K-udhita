@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
 import { isFirebaseConfigured } from '../services/firebase';
-import { getFoodListings, requestFood, parsePickupDeadlineMs } from '../services/foodService';
+import { getFoodListings, requestFood, parsePickupDeadlineMs, isListingExpired } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
 import type { FoodListing } from '../types';
@@ -102,14 +102,13 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
       const matchesDietary =
         selectedDietary === 'all' || item.dietaryType === selectedDietary;
 
-      const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
-      const isNotExpired = isNaN(deadlineMs) || deadlineMs > currentTime;
+      const isExpired = isListingExpired(item, currentTime);
 
       const isAvailable =
         item.status === 'available' &&
         Number(item.remainingQuantityKg) > 0 &&
         item.foodCondition === 'suitable' &&
-        isNotExpired;
+        !isExpired;
 
       return matchesSearch && matchesCategory && matchesDietary && isAvailable;
     })

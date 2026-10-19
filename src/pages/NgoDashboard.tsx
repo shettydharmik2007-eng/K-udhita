@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
-import { isFirebaseConfigured } from '../services/firebase';
+import { db, isFirebaseConfigured } from '../services/firebase';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import {
   getFoodListings,
   getFoodRequests,
@@ -9,6 +10,7 @@ import {
   updateRequestStatus,
   parsePickupDeadlineMs,
   formatTimestamp,
+  isListingExpired,
 } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import type {
@@ -139,29 +141,40 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
 
   useEffect(() => {
     if (!isFirebaseConfigured) return;
-    let ignore = false;
-    Promise.all([
-      getFoodListings(),
-      currentUser ? getFoodRequests({ requesterId: currentUser.uid }) : Promise.resolve([]),
-    ])
-      .then(([allListings, myRequests]) => {
-        if (!ignore) {
-          setListings(allListings);
-          setRequests(myRequests);
-          setLoading(false);
-        }
-      })
-      .catch((err: any) => {
-        if (!ignore) {
-          console.error('[NGO Dashboard] Data load failed:', err);
-          showNotification('error', 'Sync Failed', err.message || 'Could not load surplus food data');
-          setLoading(false);
-        }
-      });
+
+    // 1. Initial full fetch
+    loadDashboardData();
+
+    // 2. Real-time subscription for NGO claims and pickup confirmations
+    if (!currentUser || !db) return;
+    const reqQuery = query(
+      collection(db, 'foodRequests'),
+      where('requesterId', '==', currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      reqQuery,
+      (snapshot) => {
+        const liveRequests: FoodRequest[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<FoodRequest, 'id'>),
+        }));
+        liveRequests.sort((a, b) => {
+          const tA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+          const tB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+          return tB - tA;
+        });
+        setRequests(liveRequests);
+      },
+      (err) => {
+        console.warn('Real-time requester requests sync warning:', err);
+      }
+    );
+
     return () => {
-      ignore = true;
+      unsubscribe();
     };
-  }, [currentUser, showNotification]);
+  }, [currentUser, loadDashboardData]);
 
   const handleManualRefresh = () => {
     setRefreshing(true);
@@ -169,13 +182,13 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
   };
 
   // Helper to calculate countdown time remaining
-  const getDeadlineStatus = (pickupDeadline: string) => {
+  const getDeadlineStatus = (pickupDeadline?: any) => {
     if (!pickupDeadline) {
       return { isOverdue: false, label: 'Flexible', urgency: 'normal' as const, diffMinutes: 999 };
     }
-    const deadlineTime = new Date(pickupDeadline).getTime();
+    const deadlineTime = parsePickupDeadlineMs(pickupDeadline);
     if (isNaN(deadlineTime)) {
-      return { isOverdue: false, label: pickupDeadline, urgency: 'normal' as const, diffMinutes: 999 };
+      return { isOverdue: false, label: String(pickupDeadline), urgency: 'normal' as const, diffMinutes: 999 };
     }
 
     const diffMs = deadlineTime - currentTime;
@@ -218,11 +231,10 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
       // 2. Food safety certification: strictly suitable for donation
       const isSuitable = item.foodCondition === 'suitable';
 
-      // 3. Deadline has not passed
-      const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
-      const isNotExpired = isNaN(deadlineMs) || deadlineMs > currentTime;
+      // 3. Expiry check: expired food must disappear from NGO listings
+      const isExpired = isListingExpired(item, currentTime);
 
-      return isAvailable && isSuitable && isNotExpired;
+      return isAvailable && isSuitable && !isExpired;
     });
   }, [listings, currentTime]);
 

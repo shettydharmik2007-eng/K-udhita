@@ -358,17 +358,136 @@ export async function createFoodListing(
 }
 
 export function parsePickupDeadlineMs(pickupDeadline?: any): number {
-  if (!pickupDeadline) return NaN;
+  if (pickupDeadline === undefined || pickupDeadline === null || pickupDeadline === '') {
+    return NaN;
+  }
+
+  // 1. Firestore Timestamp instance or object with toDate()
   if (typeof pickupDeadline === 'object') {
     if (typeof pickupDeadline.toDate === 'function') {
-      return pickupDeadline.toDate().getTime();
+      try {
+        const d = pickupDeadline.toDate();
+        if (d instanceof Date && !isNaN(d.getTime())) return d.getTime();
+      } catch {
+        // continue
+      }
     }
-    if (typeof pickupDeadline.seconds === 'number') {
-      return pickupDeadline.seconds * 1000;
+    // 2. Serialized Firestore Timestamp: { seconds, nanoseconds } or { _seconds, _nanoseconds }
+    const secs = pickupDeadline.seconds ?? pickupDeadline._seconds;
+    if (secs !== undefined && secs !== null) {
+      const numSecs = Number(secs);
+      if (!isNaN(numSecs)) {
+        const nanos = pickupDeadline.nanoseconds ?? pickupDeadline._nanoseconds ?? 0;
+        return Math.round(numSecs * 1000 + Number(nanos) / 1000000);
+      }
+    }
+    // 3. Native Date instance
+    if (pickupDeadline instanceof Date) {
+      return pickupDeadline.getTime();
     }
   }
-  const parsed = new Date(pickupDeadline).getTime();
-  return isNaN(parsed) ? NaN : parsed;
+
+  // 4. Numeric timestamp (milliseconds or seconds)
+  if (typeof pickupDeadline === 'number') {
+    if (pickupDeadline > 1e11) return pickupDeadline; // milliseconds
+    if (pickupDeadline > 1e8) return pickupDeadline * 1000; // seconds
+    return NaN;
+  }
+
+  // 5. String timestamp or ISO string
+  if (typeof pickupDeadline === 'string') {
+    const trimmed = pickupDeadline.trim();
+    if (!trimmed) return NaN;
+
+    // Check if string is purely numeric
+    if (/^\d+$/.test(trimmed)) {
+      const num = Number(trimmed);
+      if (num > 1e11) return num;
+      if (num > 1e8) return num * 1000;
+    }
+
+    // Try standard Date.parse
+    const parsed = Date.parse(trimmed);
+    if (!isNaN(parsed)) return parsed;
+
+    // Replace space with T for "YYYY-MM-DD HH:mm:ss"
+    const isoLike = trimmed.replace(' ', 'T');
+    const parsedIso = Date.parse(isoLike);
+    if (!isNaN(parsedIso)) return parsedIso;
+
+    // Handle "DD/MM/YYYY, HH:mm" or "DD-MM-YYYY HH:mm"
+    const dmyMatch = trimmed.match(
+      /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:[,\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/
+    );
+    if (dmyMatch) {
+      const [, day, month, year, hours = '0', mins = '0', secs = '0'] = dmyMatch;
+      const d = new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hours),
+        Number(mins),
+        Number(secs)
+      );
+      if (!isNaN(d.getTime())) return d.getTime();
+    }
+  }
+
+  return NaN;
+}
+
+/**
+ * Returns the effective deadline timestamp (ms) for a listing document,
+ * checking standard and alternative field names.
+ */
+export function getListingPickupDeadlineMs(item: Partial<FoodListing> | any): number {
+  if (!item) return NaN;
+  const rawDeadline =
+    item.pickupDeadline ??
+    item.deadline ??
+    item.expiresAt ??
+    item.expirationDate ??
+    item.expiryTime ??
+    item.pickupWindowEnd;
+
+  const ms = parsePickupDeadlineMs(rawDeadline);
+  if (!isNaN(ms)) return ms;
+
+  // Fallback: If listing has prepDate and prepTime, check if it's past a 24-hour safe margin
+  if (item.prepDate && item.prepTime) {
+    const combinedStr = `${item.prepDate}T${item.prepTime}`;
+    const prepMs = parsePickupDeadlineMs(combinedStr);
+    if (!isNaN(prepMs) && Date.now() - prepMs > 24 * 60 * 60 * 1000) {
+      return prepMs + 6 * 60 * 60 * 1000;
+    }
+  }
+
+  return NaN;
+}
+
+/**
+ * Evaluates whether a food listing is expired based on status or pickup deadline.
+ */
+export function isListingExpired(
+  item: Partial<FoodListing> | any,
+  now = Date.now()
+): boolean {
+  if (!item) return false;
+  if (item.status === 'expired') return true;
+  if (
+    item.status === 'completed' ||
+    item.status === 'cancelled' ||
+    item.status === 'transferred_to_waste'
+  ) {
+    return false;
+  }
+
+  const deadlineMs = getListingPickupDeadlineMs(item);
+  if (!isNaN(deadlineMs) && deadlineMs <= now) {
+    return true;
+  }
+
+  return false;
 }
 
 export function formatTimestamp(val: any): string {
@@ -377,8 +496,11 @@ export function formatTimestamp(val: any): string {
     let date: Date;
     if (typeof val === 'object' && typeof val.toDate === 'function') {
       date = val.toDate();
-    } else if (typeof val === 'object' && typeof val.seconds === 'number') {
-      date = new Date(val.seconds * 1000);
+    } else if (typeof val === 'object' && (typeof val.seconds === 'number' || typeof val._seconds === 'number')) {
+      const s = val.seconds ?? val._seconds;
+      date = new Date(Number(s) * 1000);
+    } else if (typeof val === 'number') {
+      date = new Date(val > 1e11 ? val : val * 1000);
     } else {
       date = new Date(val);
     }
@@ -412,15 +534,14 @@ export async function syncExpiredFoodListings(): Promise<number> {
   try {
     const listingsCol = collection(db, 'foodListings');
     const q = query(listingsCol, where('status', 'in', ['available', 'reserved']));
-    const snap = await withTimeout(getDocs(q), 6000, 'Expiry sync timed out');
+    const snap = await withTimeout(getDocs(q), 8000, 'Expiry sync timed out');
 
     let updatedCount = 0;
     const updatePromises: Promise<any>[] = [];
 
     snap.docs.forEach((d) => {
       const data = d.data() as FoodListing;
-      const deadlineMs = parsePickupDeadlineMs(data.pickupDeadline);
-      if (!isNaN(deadlineMs) && deadlineMs <= now) {
+      if (isListingExpired(data, now)) {
         const remaining = Number(data.remainingQuantityKg) || 0;
         if (remaining > 0) {
           updatedCount++;
@@ -456,18 +577,18 @@ export async function getFoodListings(filters?: {
   void syncExpiredFoodListings();
 
   const listingsCol = collection(db, 'foodListings');
-  let q = query(listingsCol, orderBy('createdAt', 'desc'));
+  let q;
 
   if (filters?.donorId) {
     q = query(listingsCol, where('donorId', '==', filters.donorId));
-  } else if (filters?.status) {
-    q = query(listingsCol, where('status', '==', filters.status));
+  } else {
+    q = query(listingsCol);
   }
 
   const snapshot = await withTimeout(
     getDocs(q),
-    5000,
-    'Listing query timed out after 5 seconds.'
+    8000,
+    'Listing query timed out after 8 seconds.'
   );
 
   const now = Date.now();
@@ -476,11 +597,10 @@ export async function getFoodListings(filters?: {
       id: d.id,
       ...(d.data() as Omit<FoodListing, 'id'>),
     };
-    // Ensure in-memory consistency if deadline has passed
-    const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
+
+    // Ensure in-memory consistency: if deadline passed and remaining kg > 0, status is expired
     if (
-      !isNaN(deadlineMs) &&
-      deadlineMs <= now &&
+      isListingExpired(item, now) &&
       Number(item.remainingQuantityKg) > 0 &&
       (item.status === 'available' || item.status === 'reserved')
     ) {
@@ -489,12 +609,18 @@ export async function getFoodListings(filters?: {
     return item;
   });
 
-  // Additional in-memory filtering for compound criteria (avoids composite index requirement in Firestore)
+  // Sort by createdAt descending
+  listings.sort((a, b) => {
+    const timeA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+    const timeB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+    return timeB - timeA;
+  });
+
   let result = listings;
   if (filters?.category && filters.category !== 'all') {
     result = result.filter((item) => item.category === filters.category);
   }
-  if (filters?.status && filters.donorId) {
+  if (filters?.status) {
     result = result.filter((item) => item.status === filters.status);
   }
 
@@ -512,11 +638,10 @@ export async function getNgoSurplusListings(): Promise<FoodListing[]> {
     // 2. Must be marked Suitable for Donation (strictly exclude not_suitable and requires_review)
     const isSuitable = item.foodCondition === 'suitable';
 
-    // 3. Deadline must not have passed
-    const deadlineMs = parsePickupDeadlineMs(item.pickupDeadline);
-    const isNotExpired = isNaN(deadlineMs) || deadlineMs > now;
+    // 3. Must not be expired
+    const isExpired = isListingExpired(item, now);
 
-    return isAvailable && isSuitable && isNotExpired;
+    return isAvailable && isSuitable && !isExpired;
   });
 }
 
@@ -651,12 +776,9 @@ export async function requestFood(input: RequestFoodInput): Promise<string> {
       throw new Error('This food listing requires kitchen safety review before it can be donated.');
     }
 
-    // Deadline check: pickup deadline must not have passed
-    if (listingData.pickupDeadline) {
-      const deadlineMs = parsePickupDeadlineMs(listingData.pickupDeadline);
-      if (!isNaN(deadlineMs) && deadlineMs <= Date.now()) {
-        throw new Error('The pickup deadline for this food listing has already expired.');
-      }
+    // Expiry check: pickup deadline must not have passed
+    if (isListingExpired(listingData)) {
+      throw new Error('The pickup deadline for this food listing has expired and cannot be reserved.');
     }
 
     // Quantity check
@@ -686,11 +808,11 @@ export async function requestFood(input: RequestFoodInput): Promise<string> {
       listingId: input.listingId,
       foodName: listingData.foodName,
       donorId: listingData.donorId,
-      donorOrg: listingData.donorOrg,
+      donorOrg: listingData.donorOrg || listingData.donorName || 'Hospitality Partner',
       donorPhone: listingData.donorPhone || input.donorPhone || '',
       requesterId: input.requester.uid,
       requesterName: input.requester.name,
-      requesterOrg: input.requester.organizationName,
+      requesterOrg: input.requester.organizationName || input.requester.name || 'Charitable Trust',
       requesterPhone: input.requester.phone || '',
       requestedQuantityKg: requestedKg,
       requestedPortions: Number(input.requestedPortions) || Math.max(1, Math.round(requestedKg * 3)),
@@ -720,7 +842,7 @@ export async function getFoodRequests(filters: {
   if (!isFirebaseConfigured || !db) return [];
 
   const requestsCol = collection(db, 'foodRequests');
-  let q = query(requestsCol, orderBy('createdAt', 'desc'));
+  let q;
 
   if (filters.donorId) {
     q = query(requestsCol, where('donorId', '==', filters.donorId));
@@ -728,17 +850,29 @@ export async function getFoodRequests(filters: {
     q = query(requestsCol, where('requesterId', '==', filters.requesterId));
   } else if (filters.listingId) {
     q = query(requestsCol, where('listingId', '==', filters.listingId));
+  } else {
+    q = query(requestsCol);
   }
 
   const snapshot = await withTimeout(
     getDocs(q),
-    5000,
-    'Food requests query timed out after 5 seconds.'
+    8000,
+    'Food requests query timed out after 8 seconds.'
   );
-  return snapshot.docs.map((d) => ({
+
+  const list: FoodRequest[] = snapshot.docs.map((d) => ({
     id: d.id,
     ...(d.data() as Omit<FoodRequest, 'id'>),
   }));
+
+  // Sort by createdAt descending
+  list.sort((a, b) => {
+    const timeA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+    const timeB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+    return timeB - timeA;
+  });
+
+  return list;
 }
 
 export async function updateRequestStatus(
@@ -764,7 +898,7 @@ export async function updateRequestStatus(
 
   // Only the donor hotel can confirm physical pickup (mark as completed)
   if (newStatus === 'completed' && !isDonor) {
-    throw new Error('Permission denied. Only the donor hotel can confirm physical pickup.');
+    throw new Error('Permission denied. Only the owning donor hotel can confirm physical pickup.');
   }
 
   // A completed request cannot be modified or reactivated
@@ -772,19 +906,23 @@ export async function updateRequestStatus(
     throw new Error('This request has already been marked as completed/picked up.');
   }
 
-  // Check sibling active requests if marking completed, so we do not prematurely complete a partially collected listing
+  // Check sibling active requests if marking completed, scoping query to donorId for rules compliance
   let otherActiveCount = 0;
-  if (newStatus === 'completed' && preData.listingId) {
+  if (newStatus === 'completed' && preData.listingId && preData.donorId) {
     try {
       const sibQuery = query(
         collection(db, 'foodRequests'),
-        where('listingId', '==', preData.listingId)
+        where('donorId', '==', preData.donorId)
       );
       const sibSnap = await getDocs(sibQuery);
       otherActiveCount = sibSnap.docs.filter(
-        (d) => d.id !== requestId && (d.data().status === 'pending' || d.data().status === 'accepted')
+        (d) =>
+          d.id !== requestId &&
+          d.data().listingId === preData.listingId &&
+          (d.data().status === 'pending' || d.data().status === 'accepted')
       ).length;
-    } catch {
+    } catch (sibErr) {
+      console.warn('Sibling requests check warning:', sibErr);
       otherActiveCount = 0;
     }
   }
@@ -798,43 +936,56 @@ export async function updateRequestStatus(
       throw new Error('This request has already been marked as completed/picked up.');
     }
 
-    // If cancelled or rejected from pending or accepted, release the quantity back to the listing
-    if (
-      (newStatus === 'rejected' || newStatus === 'cancelled') &&
-      (reqData.status === 'pending' || reqData.status === 'accepted')
-    ) {
-      const listingRef = doc(db!, 'foodListings', reqData.listingId);
-      const listingSnap = await transaction.get(listingRef);
-      if (listingSnap.exists()) {
-        const listing = listingSnap.data() as FoodListing;
-        const currentRemaining = Number(listing.remainingQuantityKg) || 0;
-        const initialQty = Number(listing.initialQuantityKg) || currentRemaining;
-        const restoredRemaining = Math.min(
-          initialQty,
-          Math.round((currentRemaining + Number(reqData.requestedQuantityKg)) * 100) / 100
-        );
-        const deadlineMs = parsePickupDeadlineMs(listing.pickupDeadline);
-        const isExpired = !isNaN(deadlineMs) && deadlineMs <= Date.now();
-        const nextStatus = isExpired ? 'expired' : 'available';
+    let listingRef: any = null;
+    let listingSnap: any = null;
+    let listing: FoodListing | null = null;
 
-        transaction.update(listingRef, {
-          remainingQuantityKg: restoredRemaining,
-          status: nextStatus,
-          updatedAt: serverTimestamp(),
-        });
+    if (reqData.listingId) {
+      listingRef = doc(db!, 'foodListings', reqData.listingId);
+      listingSnap = await transaction.get(listingRef);
+      if (listingSnap.exists()) {
+        listing = listingSnap.data() as FoodListing;
       }
     }
 
-    // If marked completed, update listing only if 0 kg remains and no other requests are pending/accepted
-    if (newStatus === 'completed') {
-      const listingRef = doc(db!, 'foodListings', reqData.listingId);
-      const listingSnap = await transaction.get(listingRef);
-      if (listingSnap.exists()) {
-        const listing = listingSnap.data() as FoodListing;
-        const currentRemaining = Number(listing.remainingQuantityKg) || 0;
-        if (currentRemaining === 0 && otherActiveCount === 0) {
+    // If cancelled or rejected from pending or accepted, release the quantity back to the listing
+    if (
+      (newStatus === 'rejected' || newStatus === 'cancelled') &&
+      (reqData.status === 'pending' || reqData.status === 'accepted') &&
+      listingRef &&
+      listing
+    ) {
+      const currentRemaining = Number(listing.remainingQuantityKg) || 0;
+      const initialQty = Number(listing.initialQuantityKg) || currentRemaining;
+      const restoredRemaining = Math.min(
+        initialQty,
+        Math.round((currentRemaining + Number(reqData.requestedQuantityKg)) * 100) / 100
+      );
+      const isExpired = isListingExpired(listing);
+      const nextStatus = isExpired ? 'expired' : 'available';
+
+      transaction.update(listingRef, {
+        remainingQuantityKg: restoredRemaining,
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // If marked completed, update listing:
+    // If remaining quantity is 0 and no sibling claims exist, mark listing as 'completed'
+    // If remaining quantity > 0, check if expired, otherwise stays 'available'
+    if (newStatus === 'completed' && listingRef && listing) {
+      const currentRemaining = Number(listing.remainingQuantityKg) || 0;
+      if (currentRemaining === 0 && otherActiveCount === 0) {
+        transaction.update(listingRef, {
+          status: 'completed',
+          updatedAt: serverTimestamp(),
+        });
+      } else if (currentRemaining > 0) {
+        const isExpired = isListingExpired(listing);
+        if (isExpired && listing.status !== 'expired') {
           transaction.update(listingRef, {
-            status: 'completed',
+            status: 'expired',
             updatedAt: serverTimestamp(),
           });
         }

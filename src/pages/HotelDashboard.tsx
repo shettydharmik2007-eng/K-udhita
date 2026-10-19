@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
-import { isFirebaseConfigured } from '../services/firebase';
+import { db, isFirebaseConfigured } from '../services/firebase';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import {
   getFoodListings,
   getFoodRequests,
@@ -10,6 +11,7 @@ import {
   transferListingToWaste,
   formatTimestamp,
   parsePickupDeadlineMs,
+  isListingExpired,
 } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
@@ -126,29 +128,40 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
 
   useEffect(() => {
     if (!currentUser || !isFirebaseConfigured) return;
-    let ignore = false;
-    Promise.all([
-      getFoodListings({ donorId: currentUser.uid }),
-      getFoodRequests({ donorId: currentUser.uid }),
-    ])
-      .then(([listingsData, requestsData]) => {
-        if (!ignore) {
-          setListings(listingsData);
-          setRequests(requestsData);
-          setLoading(false);
-        }
-      })
-      .catch((err: any) => {
-        if (!ignore) {
-          console.error('Failed to load hotel dashboard data:', err);
-          showNotification('error', 'Data Load Error', err.message || 'Could not fetch hotel records');
-          setLoading(false);
-        }
-      });
+
+    // 1. Initial full fetch
+    loadData();
+
+    // 2. Real-time Firestore subscription for donor's reservations & pickups
+    if (!db) return;
+    const reqQuery = query(
+      collection(db, 'foodRequests'),
+      where('donorId', '==', currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      reqQuery,
+      (snapshot) => {
+        const liveRequests: FoodRequest[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<FoodRequest, 'id'>),
+        }));
+        liveRequests.sort((a, b) => {
+          const tA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+          const tB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+          return tB - tA;
+        });
+        setRequests(liveRequests);
+      },
+      (err) => {
+        console.warn('Real-time donor requests sync warning:', err);
+      }
+    );
+
     return () => {
-      ignore = true;
+      unsubscribe();
     };
-  }, [currentUser, showNotification]);
+  }, [currentUser, loadData]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -216,6 +229,22 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     if (updatingRequestId) return; // Prevent concurrent or duplicate actions
 
     setUpdatingRequestId(requestId);
+
+    // Optimistic UI state update so dashboard updates instantaneously
+    const targetReq = requests.find((r) => r.id === requestId);
+    setRequests((prev) =>
+      prev.map((r) =>
+        r.id === requestId
+          ? {
+              ...r,
+              status: newStatus,
+              updatedAt: new Date(),
+              ...(newStatus === 'completed' ? { pickedUpAt: new Date() } : {}),
+            }
+          : r
+      )
+    );
+
     try {
       await updateRequestStatus(requestId, newStatus, currentUser.uid);
       const actionMsg =
@@ -229,6 +258,8 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     } catch (err: any) {
       console.error('Failed to update request:', err);
       showNotification('error', 'Action Failed', err.message || 'Failed to update request status');
+      // Revert optimistic update
+      await loadData();
     } finally {
       setUpdatingRequestId(null);
     }
@@ -332,9 +363,20 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     0
   );
 
-  const donatedKgFromRequests = requests
-    .filter((r) => r.status === 'completed' || r.status === 'accepted')
-    .reduce((acc, r) => acc + (Number(r.requestedQuantityKg) || 0), 0);
+  const activeReservations = useMemo(
+    () => requests.filter((r) => r.status === 'pending' || r.status === 'accepted'),
+    [requests]
+  );
+
+  const completedPickups = useMemo(
+    () => requests.filter((r) => r.status === 'completed'),
+    [requests]
+  );
+
+  const donatedKgFromRequests = completedPickups.reduce(
+    (acc, r) => acc + (Number(r.requestedQuantityKg) || 0),
+    0
+  );
 
   const completedListingsKg = listings
     .filter((l) => l.status === 'completed')
@@ -343,17 +385,20 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
   const totalDonatedKg = Math.max(donatedKgFromRequests, completedListingsKg);
 
   const awaitingCollectionCount =
-    requests.filter((r) => r.status === 'accepted' || r.status === 'pending').length +
-    listings.filter((l) => l.status === 'reserved').length;
+    activeReservations.length + listings.filter((l) => l.status === 'reserved').length;
 
   // Filter listings by tab & search query
   const filteredListings = listings.filter((item) => {
-    const deadlineStatus = getDeadlineStatus(item.pickupDeadline);
-    const isOverdue = deadlineStatus.isOverdue && item.status === 'available';
+    const isOverdue = isListingExpired(item, currentTime) && item.status === 'available';
 
     let matchesTab = true;
     if (activeTab === 'available') matchesTab = item.status === 'available' && !isOverdue;
-    else if (activeTab === 'reserved') matchesTab = item.status === 'reserved';
+    else if (activeTab === 'reserved') {
+      const hasActiveClaims = requests.some(
+        (r) => r.listingId === item.id && (r.status === 'pending' || r.status === 'accepted')
+      );
+      matchesTab = item.status === 'reserved' || hasActiveClaims;
+    }
     else if (activeTab === 'overdue') matchesTab = isOverdue || item.status === 'overdue' || item.foodCondition === 'requires_review';
     else if (activeTab === 'completed') matchesTab = item.status === 'completed';
     else if (activeTab === 'transferred_to_waste') matchesTab = item.status === 'transferred_to_waste';
@@ -526,7 +571,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
           >
             <span>Awaiting Pickup</span>
             <span className="badge-pill-count">
-              {listings.filter((l) => l.status === 'reserved').length}
+              {awaitingCollectionCount}
             </span>
           </button>
 
@@ -553,7 +598,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
           >
             <span>Completed / Donated</span>
             <span className="badge-pill-count">
-              {listings.filter((l) => l.status === 'completed').length}
+              {listings.filter((l) => l.status === 'completed').length + completedPickups.length}
             </span>
           </button>
 
@@ -568,6 +613,140 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
             </span>
           </button>
         </div>
+
+        {/* Prominently render Active Community Reservations when Awaiting Pickup tab is active */}
+        {activeTab === 'reserved' && (
+          <div className="mb-8 p-5 bg-white border-2 border-emerald-500/30 shadow-md rounded-2xl animate-fade-in-up">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
+                  <Clock size={22} className="text-emerald" />
+                  <span>NGO Surplus Claims Awaiting Handover</span>
+                </h3>
+                <p className="text-sm text-slate-600 mt-0.5">
+                  Confirm physical pickup when verified NGO volunteers arrive at your hotel kitchen or banquet loading bay.
+                </p>
+              </div>
+              <span className="badge-pill-count text-sm px-3 py-1 bg-emerald-100 text-emerald-800 font-bold">
+                {activeReservations.length} Pending Handover
+              </span>
+            </div>
+
+            {activeReservations.length === 0 ? (
+              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                <p className="text-slate-600 font-medium">No pending NGO claims right now. When an NGO requests portions of your food, it will immediately appear here with NGO details and a &quot;Mark as Picked Up&quot; button.</p>
+              </div>
+            ) : (
+              <div className="requests-table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Food Item</th>
+                      <th>NGO / Trust Name</th>
+                      <th>Reserved Quantity</th>
+                      <th>Request Date</th>
+                      <th>Status</th>
+                      <th>Confirm Pickup Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeReservations.map((req) => (
+                      <tr key={req.id}>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            {req.imageUrl ? (
+                              <img
+                                src={req.imageUrl}
+                                alt={req.foodName}
+                                className="w-10 h-10 object-cover rounded shadow-sm flex-shrink-0"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-lg flex-shrink-0">
+                                🍽️
+                              </div>
+                            )}
+                            <div>
+                              <strong>{req.foodName}</strong>
+                              <div className="text-muted text-xs">
+                                Est: {req.pickupTimeEstimate || 'Within window'}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div>
+                            <strong>{req.requesterOrg || req.requesterName || 'Community Trust'}</strong>
+                            <div className="text-muted text-xs">
+                              {req.requesterName} {req.requesterPhone ? `• ${req.requesterPhone}` : ''}
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="badge-qty font-bold text-slate-900">{req.requestedQuantityKg} kg</span>
+                          <small className="d-block text-muted">~{req.requestedPortions} portions</small>
+                        </td>
+                        <td>
+                          <span className="text-xs text-slate-700">
+                            {formatTimestamp(req.createdAt)}
+                          </span>
+                        </td>
+                        <td>
+                          <StatusBadge status={req.status} type="request" />
+                        </td>
+                        <td>
+                          <div className="action-button-group flex items-center gap-1.5">
+                            {req.status === 'pending' && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-success"
+                                  disabled={updatingRequestId === req.id}
+                                  onClick={() => handleUpdateReqStatus(req.id, 'accepted')}
+                                  title="Accept claim and hold portions"
+                                >
+                                  <CheckCircle size={14} /> Accept
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-danger"
+                                  disabled={updatingRequestId === req.id}
+                                  onClick={() => handleUpdateReqStatus(req.id, 'rejected')}
+                                  title="Decline claim"
+                                >
+                                  <XCircle size={14} /> Reject
+                                </button>
+                              </>
+                            )}
+
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-primary flex items-center gap-1.5 font-bold shadow-sm"
+                              disabled={updatingRequestId === req.id}
+                              onClick={() => handleUpdateReqStatus(req.id, 'completed')}
+                              title="Click to confirm physical collection by NGO volunteer"
+                            >
+                              {updatingRequestId === req.id ? (
+                                <>
+                                  <div className="spinner-small" />
+                                  <span>Confirming...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle2 size={15} />
+                                  <span>Mark as Picked Up</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
 
         {loading ? (
           <div className="text-center py-12">
@@ -740,6 +919,58 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                       />
                     </div>
 
+                    {/* Active NGO Reservations on this listing */}
+                    {(() => {
+                      const itemActiveClaims = requests.filter(
+                        (r) => r.listingId === item.id && (r.status === 'pending' || r.status === 'accepted')
+                      );
+                      if (itemActiveClaims.length === 0) return null;
+                      return (
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 my-2">
+                          <div className="text-xs font-bold text-emerald-900 flex items-center justify-between mb-1.5">
+                            <span className="flex items-center gap-1">
+                              <Clock size={13} className="text-emerald" />
+                              <span>Reserved by NGO</span>
+                            </span>
+                            <span className="text-[11px] font-semibold text-emerald-800">
+                              {itemActiveClaims.reduce((s, c) => s + c.requestedQuantityKg, 0)} kg total
+                            </span>
+                          </div>
+                          {itemActiveClaims.map((claim) => (
+                            <div
+                              key={claim.id}
+                              className="flex items-center justify-between text-xs py-1.5 border-t border-emerald-100 first:border-0"
+                            >
+                              <div className="truncate mr-2">
+                                <span className="font-bold text-slate-900">
+                                  {claim.requesterOrg || claim.requesterName || 'NGO Partner'}
+                                </span>
+                                <span className="text-slate-600 font-semibold ml-1">
+                                  ({claim.requestedQuantityKg} kg)
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn btn-xs btn-primary font-bold flex items-center gap-1 shadow-xs shrink-0"
+                                disabled={updatingRequestId === claim.id}
+                                onClick={() => handleUpdateReqStatus(claim.id, 'completed')}
+                                title="Confirm physical handover to NGO"
+                              >
+                                {updatingRequestId === claim.id ? (
+                                  <span>...</span>
+                                ) : (
+                                  <>
+                                    <CheckCircle2 size={12} />
+                                    <span>Mark as Picked Up</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
                     {/* Action Buttons (Requirement 11) */}
                     <div className="listing-card-actions mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
                       {/* Edit Button */}
@@ -862,7 +1093,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                       </td>
                       <td>
                         <div>
-                          <strong>{req.requesterOrg}</strong>
+                          <strong>{req.requesterOrg || req.requesterName || 'Community Trust'}</strong>
                           <div className="text-muted text-xs">
                             {req.requesterName} {req.requesterPhone ? `• ${req.requesterPhone}` : ''}
                           </div>
@@ -989,7 +1220,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                       </td>
                       <td>
                         <div>
-                          <strong>{req.requesterOrg}</strong>
+                          <strong>{req.requesterOrg || req.requesterName || 'Charity / NGO'}</strong>
                           <div className="text-muted text-xs">
                             {req.requesterName} {req.requesterPhone ? `• ${req.requesterPhone}` : ''}
                           </div>

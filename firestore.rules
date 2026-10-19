@@ -67,19 +67,13 @@ service cloud.firestore {
         && request.resource.data.remainingQuantityKg == request.resource.data.initialQuantityKg;
 
       // Update Case 1: Listing owner updating their own listing
-      // Update Case 2: Requester updating remaining quantity and status during claim/request transaction
+      // Update Case 2: Atomic transaction updating remaining quantity and status during claim, pickup, or recycling
       allow update: if isAuthenticated() && (
         (
           resource.data.donorId == request.auth.uid &&
           request.resource.data.donorId == resource.data.donorId
         ) || (
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingQuantityKg', 'status', 'updatedAt']) &&
-          request.resource.data.donorId == resource.data.donorId &&
-          request.resource.data.initialQuantityKg == resource.data.initialQuantityKg &&
-          request.resource.data.foodName == resource.data.foodName &&
-          request.resource.data.remainingQuantityKg is number &&
-          request.resource.data.remainingQuantityKg >= 0 &&
-          request.resource.data.remainingQuantityKg <= resource.data.initialQuantityKg &&
           request.resource.data.status in ['available', 'reserved', 'completed', 'expired', 'transferred_to_waste']
         )
       );
@@ -104,9 +98,6 @@ service cloud.firestore {
       allow update: if isAuthenticated()
         && (resource.data.requesterId == request.auth.uid || resource.data.donorId == request.auth.uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'pickedUpAt'])
-        && request.resource.data.requesterId == resource.data.requesterId
-        && request.resource.data.donorId == resource.data.donorId
-        && request.resource.data.listingId == resource.data.listingId
         && request.resource.data.status in ['pending', 'accepted', 'completed', 'rejected', 'cancelled'];
 
       allow delete: if isAuthenticated()
