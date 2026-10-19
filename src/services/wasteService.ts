@@ -10,7 +10,7 @@ import {
   runTransaction,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from './firebase';
+import { db, auth, isFirebaseConfigured } from './firebase';
 import type {
   WasteCollection,
   WasteCollectionStatus,
@@ -100,10 +100,10 @@ export async function getWasteCollections(filters?: {
   donorId?: string;
   category?: string;
 }): Promise<WasteCollection[]> {
-  if (!isFirebaseConfigured || !db) return [];
+  if (!isFirebaseConfigured || !db || !auth?.currentUser) return [];
 
   const wasteCol = collection(db, 'wasteCollections');
-  let q = query(wasteCol, orderBy('createdAt', 'desc'));
+  let q;
 
   if (filters?.donorId) {
     q = query(wasteCol, where('donorId', '==', filters.donorId));
@@ -111,6 +111,8 @@ export async function getWasteCollections(filters?: {
     q = query(wasteCol, where('partnerId', '==', filters.partnerId));
   } else if (filters?.status) {
     q = query(wasteCol, where('status', '==', filters.status));
+  } else {
+    q = query(wasteCol);
   }
 
   const snapshot = await withTimeout(
@@ -123,6 +125,13 @@ export async function getWasteCollections(filters?: {
     ...(d.data() as Omit<WasteCollection, 'id'>),
   }));
 
+  // Sort in-memory by createdAt descending
+  list.sort((a, b) => {
+    const timeA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+    const timeB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+    return timeB - timeA;
+  });
+
   if (filters?.category && filters.category !== 'all') {
     list = list.filter((item) => item.category === filters.category);
   }
@@ -130,7 +139,7 @@ export async function getWasteCollections(filters?: {
   return list;
 }
 
-import { isListingExpired, parsePickupDeadlineMs, syncExpiredFoodListings } from './foodService';
+import { isListingExpired, parsePickupDeadlineMs } from './foodService';
 
 // Fetch both transferred waste and hotel surplus eligible for recycling:
 // 1) Hotel surplus marked 'not_suitable'
@@ -140,12 +149,9 @@ export async function getAvailableWasteForRecyclers(): Promise<{
   wasteRecords: WasteCollection[];
   unsuitableListings: FoodListing[];
 }> {
-  if (!isFirebaseConfigured || !db) {
+  if (!isFirebaseConfigured || !db || !auth?.currentUser) {
     return { wasteRecords: [], unsuitableListings: [] };
   }
-
-  // Trigger background expiry sync across active listings
-  void syncExpiredFoodListings();
 
   // 1. Fetch available wasteCollections
   const wasteCol = collection(db, 'wasteCollections');
@@ -173,18 +179,45 @@ export async function getAvailableWasteForRecyclers(): Promise<{
       .map((w) => w.sourceListingId!)
   );
 
-  // 2. Fetch foodListings
+  // 2. Fetch foodListings using rules-compatible query filters:
+  // Query status in ['available', 'reserved', 'expired'] to cover active, reserved, and expired surplus
   const listingsCol = collection(db, 'foodListings');
+  const qStatusListings = query(
+    listingsCol,
+    where('status', 'in', ['available', 'reserved', 'expired'])
+  );
+
   const listingsSnap = await withTimeout(
-    getDocs(listingsCol),
+    getDocs(qStatusListings),
     10000,
     'Listings query timed out'
   );
-  const allListings: FoodListing[] = listingsSnap.docs.map((d) => ({
-    id: d.id,
-    ...(d.data() as Omit<FoodListing, 'id'>),
-  }));
 
+  const listingsMap = new Map<string, FoodListing>();
+  listingsSnap.docs.forEach((d) => {
+    listingsMap.set(d.id, {
+      id: d.id,
+      ...(d.data() as Omit<FoodListing, 'id'>),
+    });
+  });
+
+  // Also query any listing marked 'not_suitable' (if not already captured)
+  try {
+    const qUnsuitable = query(listingsCol, where('foodCondition', '==', 'not_suitable'));
+    const unsSnap = await withTimeout(getDocs(qUnsuitable), 6000, 'Unsuitable query timed out');
+    unsSnap.docs.forEach((d) => {
+      if (!listingsMap.has(d.id)) {
+        listingsMap.set(d.id, {
+          id: d.id,
+          ...(d.data() as Omit<FoodListing, 'id'>),
+        });
+      }
+    });
+  } catch (unsErr) {
+    console.warn('[Waste Service] Unsuitable foodCondition query warning:', unsErr);
+  }
+
+  const allListings = Array.from(listingsMap.values());
   const now = Date.now();
 
   // Filter listings:

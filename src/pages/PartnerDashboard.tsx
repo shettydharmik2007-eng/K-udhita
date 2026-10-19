@@ -92,7 +92,7 @@ const WASTE_CATEGORY_META: Record<
 };
 
 export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
-  const { currentUser, userProfile, isWastePartner, isDonor, isRequester } = useAuth();
+  const { currentUser, userProfile, isWastePartner, isDonor, isRequester, loading: authLoading } = useAuth();
   const { showNotification } = useNotification();
 
   // Main Tabs: 'available' | 'active' | 'history' | 'profile'
@@ -183,7 +183,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
 
   // Load live data from Firestore
   const loadData = useCallback(async () => {
-    if (!isFirebaseConfigured) {
+    if (!isFirebaseConfigured || !currentUser) {
       setLoading(false);
       return;
     }
@@ -200,10 +200,13 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [showNotification]);
+  }, [currentUser, showNotification]);
 
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
+    if (!isFirebaseConfigured || !currentUser) {
+      setLoading(false);
+      return;
+    }
     let ignore = false;
 
     const fetchWaste = () => {
@@ -639,6 +642,51 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
       setProfileAcceptedCategories([...profileAcceptedCategories, cat]);
     }
   };
+
+  // If authentication state is still resolving, show clean loading state
+  if (authLoading && !currentUser) {
+    return (
+      <div className="page-container flex items-center justify-center min-h-[400px]">
+        <div className="text-center py-12">
+          <RefreshCw size={36} className="spin-icon mx-auto text-emerald-600 mb-3" />
+          <p className="text-muted">Loading Recycler Portal...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If user is not authenticated, show sign-in prompt rather than failing Firestore queries
+  if (!currentUser) {
+    return (
+      <div className="page-container animate-fade-in-up">
+        <div className="auth-card mx-auto max-w-lg text-center py-10 px-6">
+          <div className="auth-icon-badge mx-auto mb-4">
+            <Truck size={32} className="text-emerald" />
+          </div>
+          <h2 className="text-2xl font-bold mb-2">Organic Waste Recycler Portal</h2>
+          <p className="text-muted mb-6">
+            Please sign in with your registered Waste Recycler or Bio-processing partner account to view expired surplus, manage circular collections, and log weighbridge conversions.
+          </p>
+          <div className="flex justify-center gap-3">
+            <button
+              type="button"
+              className="btn btn-primary btn-lg btn-motion"
+              onClick={() => onNavigate('login')}
+            >
+              Sign In to Recycler Portal
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline btn-lg btn-motion"
+              onClick={() => onNavigate('signup')}
+            >
+              Register Facility
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page-container recycler-dashboard-wrapper animate-fade-in-up">

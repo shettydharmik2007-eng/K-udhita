@@ -15,6 +15,17 @@ service cloud.firestore {
       return role in ['donor', 'requester', 'waste_partner', 'admin'];
     }
 
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token != null && request.auth.token.admin == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserRole() == 'admin')
+      );
+    }
+
     function hasValidUserFields() {
       let allowedFields = [
         'uid', 'email', 'name', 'role', 'organizationName', 'phone', 'address', 'createdAt', 'updatedAt',
@@ -25,7 +36,7 @@ service cloud.firestore {
 
     function isValidUserProfileCreate(userId) {
       let data = request.resource.data;
-      return isOwner(userId)
+      return (isOwner(userId) || isAdmin())
         && data.uid == userId
         && isValidRole(data.role)
         && hasValidUserFields()
@@ -36,7 +47,7 @@ service cloud.firestore {
 
     function isValidUserProfileUpdate(userId) {
       let data = request.resource.data;
-      return isOwner(userId)
+      return (isOwner(userId) || isAdmin())
         && data.uid == userId
         && isValidRole(data.role)
         && hasValidUserFields()
@@ -44,33 +55,41 @@ service cloud.firestore {
     }
 
     // Users collection
-    // Authenticated users can create, update, and read ONLY their own profile (request.auth.uid == userId)
+    // Authenticated users can create, update, and read ONLY their own profile; admins can manage profiles
     match /users/{userId} {
-      allow read: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin();
       allow create: if isValidUserProfileCreate(userId);
       allow update: if isValidUserProfileUpdate(userId);
-      allow delete: if false; // Profiles should not be deleted arbitrarily
+      allow delete: if isAdmin();
     }
 
     // Food Listings collection
-    // Publicly readable so communities can view available leftover food
-    // Only authenticated donors can create listings for their own account
-    // Updates are allowed ONLY to the listing owner, or during an authorized request transaction
+    // Authenticated users can view listings:
+    // - Donors can view all their listings
+    // - Requesters / community can view active food surplus ('available', 'reserved')
+    // - Waste partners can view expired food ('expired') or food unsuitable for donation ('not_suitable')
+    // - Admins have full access
     match /foodListings/{listingId} {
-      allow read: if true;
+      allow read: if isAuthenticated() && (
+        resource.data.donorId == request.auth.uid ||
+        resource.data.status in ['available', 'reserved', 'expired', 'transferred_to_waste'] ||
+        resource.data.foodCondition == 'not_suitable' ||
+        isAdmin()
+      );
+
       allow create: if isAuthenticated()
-        && request.resource.data.donorId == request.auth.uid
+        && (request.resource.data.donorId == request.auth.uid || isAdmin())
         && request.resource.data.status == 'available'
         && request.resource.data.initialQuantityKg is number
         && request.resource.data.initialQuantityKg > 0
         && request.resource.data.remainingQuantityKg is number
         && request.resource.data.remainingQuantityKg == request.resource.data.initialQuantityKg;
 
-      // Update Case 1: Listing owner updating their own listing
+      // Update Case 1: Listing owner or admin updating listing
       // Update Case 2: Atomic transaction updating remaining quantity and status during claim, pickup, or recycling
       allow update: if isAuthenticated() && (
         (
-          resource.data.donorId == request.auth.uid &&
+          (resource.data.donorId == request.auth.uid || isAdmin()) &&
           request.resource.data.donorId == resource.data.donorId
         ) || (
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingQuantityKg', 'status', 'updatedAt']) &&
@@ -78,50 +97,57 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isAuthenticated() && resource.data.donorId == request.auth.uid;
+      allow delete: if isAuthenticated() && (resource.data.donorId == request.auth.uid || isAdmin());
     }
 
     // Food Requests collection
-    // Requesters can view their own requests; donors can view requests for their listings
+    // Requesters can view their own requests; donors can view requests for their listings; admins can view all
     match /foodRequests/{requestId} {
       allow read: if isAuthenticated() && (
         resource.data.requesterId == request.auth.uid ||
-        resource.data.donorId == request.auth.uid
+        resource.data.donorId == request.auth.uid ||
+        isAdmin()
       );
+
       allow create: if isAuthenticated()
-        && request.resource.data.requesterId == request.auth.uid
+        && (request.resource.data.requesterId == request.auth.uid || isAdmin())
         && request.resource.data.status == 'pending'
         && request.resource.data.requestedQuantityKg is number
         && request.resource.data.requestedQuantityKg > 0;
 
-      // Status updates by either donor (accept/reject/pickup confirmation) or requester (cancel/complete)
+      // Status updates by either donor (accept/reject/pickup confirmation) or requester (cancel/complete) or admin
       allow update: if isAuthenticated()
-        && (resource.data.requesterId == request.auth.uid || resource.data.donorId == request.auth.uid)
+        && (resource.data.requesterId == request.auth.uid || resource.data.donorId == request.auth.uid || isAdmin())
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'pickedUpAt'])
         && request.resource.data.status in ['pending', 'accepted', 'completed', 'rejected', 'cancelled'];
 
       allow delete: if isAuthenticated()
-        && resource.data.requesterId == request.auth.uid
-        && resource.data.status == 'pending';
+        && (
+          (resource.data.requesterId == request.auth.uid && resource.data.status == 'pending') ||
+          isAdmin()
+        );
     }
 
     // Waste Collections collection
-    // Authorized waste partners and donors can view, claim and update
+    // Authorized waste partners, donors, and admins can view, claim, and update
     match /wasteCollections/{collectionId} {
       allow read: if isAuthenticated();
 
       // Allowed creates:
       // 1. Donor creating a waste collection record
-      // 2. Waste partner creating a collection request from an unsuitable surplus listing
+      // 2. Waste partner creating a collection request from an unsuitable or expired surplus listing
+      // 3. Admin
       allow create: if isAuthenticated() && (
         request.resource.data.donorId == request.auth.uid ||
-        request.resource.data.partnerId == request.auth.uid
+        request.resource.data.partnerId == request.auth.uid ||
+        isAdmin()
       );
 
       // Allowed updates:
       // 1. Donor managing their own waste record
       // 2. Waste partner requesting / claiming a pending collection
-      // 3. Assigned waste partner updating status, actual weight, and processing details
+      // 3. Assigned waste partner updating status, actual weight, notes, and processing details
+      // 4. Admin
       allow update: if isAuthenticated() && (
         resource.data.donorId == request.auth.uid ||
         (
@@ -130,14 +156,15 @@ service cloud.firestore {
           request.resource.data.donorId == resource.data.donorId
         ) || (
           resource.data.partnerId == request.auth.uid &&
-          request.resource.data.donorId == resource.data.donorId &&
-          request.resource.data.partnerId == resource.data.partnerId
-        )
+          request.resource.data.donorId == resource.data.donorId
+        ) ||
+        isAdmin()
       );
 
       allow delete: if isAuthenticated() && (
         resource.data.donorId == request.auth.uid ||
-        resource.data.partnerId == request.auth.uid
+        resource.data.partnerId == request.auth.uid ||
+        isAdmin()
       );
     }
   }
