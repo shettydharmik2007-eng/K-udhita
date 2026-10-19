@@ -531,8 +531,8 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
 
                 {/* Overlaid Badges */}
                 <div className="ngo-card-badge-top-left">
-                  <span className={`tag-dietary ${selectedListing.dietaryType}`}>
-                    {selectedListing.dietaryType.toUpperCase()}
+                  <span className={`tag-dietary ${selectedListing.dietaryType || 'veg'}`}>
+                    {(selectedListing.dietaryType || 'vegetarian').toUpperCase()}
                   </span>
                   <span className="badge-neutral text-xs font-semibold px-2.5 py-1 rounded shadow-sm bg-white">
                     {catMeta.icon} {catMeta.label}
@@ -725,7 +725,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
                   </div>
                   <p className="text-sm text-blue-800 mb-4 leading-relaxed">
                     Your organization already has an active claim (
-                    <strong>{alreadyClaimedListing.status.toUpperCase()}</strong>) for{' '}
+                    <strong>{(alreadyClaimedListing.status || 'claimed').toUpperCase()}</strong>) for{' '}
                     <strong>{alreadyClaimedListing.requestedQuantityKg} kg</strong> (~
                     {alreadyClaimedListing.requestedPortions} portions) of this food.
                   </p>
@@ -1245,8 +1245,8 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
 
                       {/* Top Left: Dietary & Category */}
                       <div className="ngo-card-badge-top-left">
-                        <span className={`tag-dietary ${item.dietaryType}`}>
-                          {item.dietaryType.toUpperCase()}
+                        <span className={`tag-dietary ${item.dietaryType || 'veg'}`}>
+                          {(item.dietaryType || 'vegetarian').toUpperCase()}
                         </span>
                         <span className="badge-neutral text-xs font-semibold px-2 py-0.5 rounded shadow-sm bg-white">
                           {catMeta.icon} {catMeta.label}

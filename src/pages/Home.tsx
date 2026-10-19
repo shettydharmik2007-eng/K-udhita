@@ -283,11 +283,11 @@ export const Home: React.FC<Props> = ({ onNavigate }) => {
                       style={{ display: item.imageUrl ? 'none' : 'flex' }}
                     >
                       <Utensils size={36} />
-                      <span>{item.category.replace('_', ' ')}</span>
+                      <span>{(item.category || 'surplus').replace('_', ' ')}</span>
                     </div>
                     <div className="food-card-tags">
-                      <span className={`tag-dietary ${item.dietaryType}`}>
-                        {item.dietaryType.toUpperCase()}
+                      <span className={`tag-dietary ${item.dietaryType || 'veg'}`}>
+                        {(item.dietaryType || 'vegetarian').toUpperCase()}
                       </span>
                     </div>
                   </div>

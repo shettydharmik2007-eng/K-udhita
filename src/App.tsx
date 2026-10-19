@@ -4,6 +4,7 @@ import { NotificationProvider } from './context/NotificationContext';
 import { Navbar } from './components/common/Navbar';
 import { Footer } from './components/common/Footer';
 import { FirebaseAlertBanner } from './components/common/FirebaseAlertBanner';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 // Pages
 import { Home } from './pages/Home';
@@ -120,11 +121,13 @@ export function AppContent() {
 
 export function App() {
   return (
-    <AuthProvider>
-      <NotificationProvider>
-        <AppContent />
-      </NotificationProvider>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <NotificationProvider>
+          <AppContent />
+        </NotificationProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 
