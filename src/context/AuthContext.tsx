@@ -23,7 +23,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(() => isFirebaseConfigured && !!auth);
 
   const fetchProfile = async (uid: string) => {
     try {
@@ -36,7 +36,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     if (!isFirebaseConfigured || !auth) {
-      setLoading(false);
       return;
     }
 
@@ -98,6 +97,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 };
 
+// oxlint-disable-next-line react/only-export-components
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (!context) {

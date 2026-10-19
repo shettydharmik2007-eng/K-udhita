@@ -191,7 +191,7 @@ export async function signUpUser(params: SignUpParams): Promise<UserProfile> {
       try {
         const signInCredential = await signInWithEmailAndPassword(auth, cleanEmail, params.password);
         user = signInCredential.user;
-      } catch (signInErr: any) {
+      } catch {
         // If password doesn't match or another issue, bubble the original error
         throw authErr;
       }

@@ -6,7 +6,7 @@ interface Props {
   type?: 'listing' | 'request' | 'waste';
 }
 
-export const StatusBadge: React.FC<Props> = ({ status, type = 'listing' }) => {
+export const StatusBadge: React.FC<Props> = ({ status, type: _type = 'listing' }) => {
   const getBadgeClass = () => {
     switch (status) {
       case 'available':

@@ -11,13 +11,9 @@ import {
   ArrowRight,
   Scale,
   Users,
-  Globe2,
   Recycle,
-  ShieldCheck,
   Building2,
-  Heart,
   ChevronRight,
-  TrendingUp,
 } from 'lucide-react';
 
 interface Props {

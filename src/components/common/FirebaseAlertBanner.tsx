@@ -1,6 +1,6 @@
 import React from 'react';
 import { isFirebaseConfigured, getMissingEnvVars } from '../../services/firebase';
-import { AlertTriangle, ExternalLink, KeyRound } from 'lucide-react';
+import { AlertTriangle, KeyRound } from 'lucide-react';
 
 interface Props {
   onOpenSetupGuide: () => void;

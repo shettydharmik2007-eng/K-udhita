@@ -1,14 +1,11 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Camera,
   Image as ImageIcon,
-  X,
   AlertCircle,
   ShieldAlert,
-  RotateCcw,
   RefreshCw,
   Upload,
-  CheckCircle2,
   Trash2,
 } from 'lucide-react';
 import { CameraCaptureModal } from './CameraCaptureModal';
@@ -35,27 +32,22 @@ export const ImageUpload: React.FC<Props> = ({
   onRetryUpload,
 }) => {
   const [localPreview, setLocalPreview] = useState<string | null>(previewUrl || null);
+  const [prevPropUrl, setPrevPropUrl] = useState<string | undefined>(previewUrl);
+
+  // Sync external previewUrl updates if prop changes
+  if (previewUrl !== prevPropUrl) {
+    setPrevPropUrl(previewUrl);
+    if (!localPreview) {
+      setLocalPreview(previewUrl || null);
+    }
+  }
+
   const [fileDetails, setFileDetails] = useState<{ name: string; sizeKb: number } | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [cameraModalOpen, setCameraModalOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Sync external previewUrl updates (e.g., when editing existing listings)
-  useEffect(() => {
-    if (previewUrl && !localPreview) {
-      setLocalPreview(previewUrl);
-    }
-  }, [previewUrl]);
-
-  // Format file size nicely
-  const formatSize = (bytes: number): string => {
-    if (bytes < 1024 * 1024) {
-      return `${Math.round(bytes / 1024)} KB`;
-    }
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  };
 
   const processFile = (file: File) => {
     // Validate size (max 5MB)

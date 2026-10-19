@@ -159,7 +159,7 @@ export async function uploadToCloudinary(
           (err as any).code = 'cloudinary/upload-failed';
           reject(err);
         }
-      } catch (_) {
+      } catch {
         const err = new Error(`Invalid server response from Cloudinary (HTTP ${xhr.status})`);
         (err as any).code = 'cloudinary/parse-error';
         reject(err);
@@ -239,7 +239,7 @@ export async function uploadFoodImage(
       if (!completed && uploadTask.snapshot.bytesTransferred === 0) {
         try {
           uploadTask.cancel();
-        } catch (_) {
+        } catch {
           // ignore error on cancel
         }
         const errorMsg = `Upload timed out at 0% connecting to bucket "${storageRef.bucket}". Firebase Storage preflight returned 404/CORS. Please check Firebase Console → Storage → Files to verify that Cloud Storage is activated and that the bucket name matches gs://${storageRef.bucket}.`;

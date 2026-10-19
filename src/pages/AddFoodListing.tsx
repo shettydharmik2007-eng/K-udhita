@@ -13,7 +13,6 @@ import type {
   WeightMeasurementMethod,
 } from '../types';
 import {
-  Utensils,
   Clock,
   MapPin,
   Calendar,
@@ -21,18 +20,35 @@ import {
   CheckCircle2,
   Building2,
   Scale,
-  Sparkles,
   ArrowRight,
   ShieldCheck,
   ShieldAlert,
   HelpCircle,
   Thermometer,
-  Layers,
   FileText,
 } from 'lucide-react';
 
 interface Props {
   onNavigate: (page: string) => void;
+}
+
+function getInitialFormDates() {
+  const now = new Date();
+  const todayStr = now.toISOString().split('T')[0];
+  const nowHours = now.getHours().toString().padStart(2, '0');
+  const nowMinutes = now.getMinutes().toString().padStart(2, '0');
+  const futureDate = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+  const defaultDeadlineDate = futureDate.toISOString().split('T')[0];
+  const defaultDeadlineTime = `${futureDate.getHours().toString().padStart(2, '0')}:${futureDate
+    .getMinutes()
+    .toString()
+    .padStart(2, '0')}`;
+  return {
+    prepDate: todayStr,
+    prepTime: `${nowHours}:${nowMinutes}`,
+    deadlineDate: defaultDeadlineDate,
+    deadlineTime: defaultDeadlineTime,
+  };
 }
 
 // 6 Core Categories with rich details and dish suggestions
@@ -91,20 +107,6 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
   const { currentUser, userProfile, isDonor } = useAuth();
   const { showNotification } = useNotification();
 
-  // Helper defaults for dates and times
-  const todayStr = new Date().toISOString().split('T')[0];
-  const nowHours = new Date().getHours().toString().padStart(2, '0');
-  const nowMinutes = new Date().getMinutes().toString().padStart(2, '0');
-  const currentTimeStr = `${nowHours}:${nowMinutes}`;
-
-  // Default pickup deadline: 3 hours from now
-  const futureDate = new Date(Date.now() + 3 * 60 * 60 * 1000);
-  const defaultDeadlineDate = futureDate.toISOString().split('T')[0];
-  const defaultDeadlineTime = `${futureDate.getHours().toString().padStart(2, '0')}:${futureDate
-    .getMinutes()
-    .toString()
-    .padStart(2, '0')}`;
-
   // Step 1: Category (required first step)
   const [category, setCategory] = useState<FoodCategory>('rice_pulao');
 
@@ -120,12 +122,21 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
   const [measurementMethod, setMeasurementMethod] = useState<WeightMeasurementMethod>('digital_scale');
 
   // Step 5: Preparation Date & Time
-  const [prepDate, setPrepDate] = useState(todayStr);
-  const [prepTime, setPrepTime] = useState(currentTimeStr);
+  const [prepDate, setPrepDate] = useState(() => getInitialFormDates().prepDate);
+  const [prepTime, setPrepTime] = useState(() => getInitialFormDates().prepTime);
 
   // Step 6: Pickup Deadline Date & Time
-  const [deadlineDate, setDeadlineDate] = useState(defaultDeadlineDate);
-  const [deadlineTime, setDeadlineTime] = useState(defaultDeadlineTime);
+  const [deadlineDate, setDeadlineDate] = useState(() => getInitialFormDates().deadlineDate);
+  const [deadlineTime, setDeadlineTime] = useState(() => getInitialFormDates().deadlineTime);
+
+  // Current timestamp tracked cleanly for countdown
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  React.useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const todayDateStr = new Date(currentTime).toISOString().split('T')[0];
 
   // Step 7: Food Safety & Storage
   const [foodCondition, setFoodCondition] = useState<FoodCondition>('suitable');
@@ -154,8 +165,8 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
 
   // Compute remaining time until deadline
   const deadlineDateTime = new Date(`${deadlineDate}T${deadlineTime}`);
-  const isDeadlineValid = !isNaN(deadlineDateTime.getTime()) && deadlineDateTime.getTime() > Date.now();
-  const diffMinutes = Math.round((deadlineDateTime.getTime() - Date.now()) / (1000 * 60));
+  const isDeadlineValid = !isNaN(deadlineDateTime.getTime()) && deadlineDateTime.getTime() > currentTime;
+  const diffMinutes = Math.round((deadlineDateTime.getTime() - currentTime) / (1000 * 60));
   const diffHours = Math.floor(diffMinutes / 60);
   const remainingMins = diffMinutes % 60;
 
@@ -530,7 +541,7 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
                 type="date"
                 className="form-control"
                 value={prepDate}
-                max={todayStr}
+                max={todayDateStr}
                 onChange={(e) => setPrepDate(e.target.value)}
                 required
               />
@@ -570,7 +581,7 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
                 type="date"
                 className="form-control"
                 value={deadlineDate}
-                min={todayStr}
+                min={todayDateStr}
                 onChange={(e) => setDeadlineDate(e.target.value)}
                 required
               />
@@ -728,6 +739,19 @@ export const AddFoodListing: React.FC<Props> = ({ onNavigate }) => {
               placeholder="e.g. Please bring clean food-grade insulated containers. Ask for Duty Captain Ramesh on arrival."
               value={pickupInstructions}
               onChange={(e) => setPickupInstructions(e.target.value)}
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label font-semibold text-slate-800">
+              Additional Details / Description (Optional)
+            </label>
+            <textarea
+              className="form-control"
+              rows={2}
+              placeholder="e.g. Freshly prepared for banquet, kept in sealed chafing dishes."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
             />
           </div>
         </div>

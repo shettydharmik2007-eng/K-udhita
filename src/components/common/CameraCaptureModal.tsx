@@ -81,6 +81,7 @@ export const CameraCaptureModal: React.FC<Props> = ({
   const startCamera = useCallback(
     async (mode: 'environment' | 'user') => {
       stopStream();
+      await Promise.resolve();
       setCameraError(null);
       setDeviceNotice(null);
       setStartingCamera(true);
@@ -161,18 +162,26 @@ export const CameraCaptureModal: React.FC<Props> = ({
   // Lifecycle: open/close modal
   useEffect(() => {
     if (isOpen) {
-      clearCapturedPreview();
-      startCamera(facingMode);
+      void Promise.resolve().then(() => {
+        startCamera(facingMode);
+      });
     } else {
       stopStream();
-      clearCapturedPreview();
     }
 
     return () => {
       stopStream();
-      clearCapturedPreview();
     };
-  }, [isOpen, facingMode, startCamera, stopStream, clearCapturedPreview]);
+  }, [isOpen, facingMode, startCamera, stopStream]);
+
+  // Cleanup object URL on unmount
+  useEffect(() => {
+    return () => {
+      if (capturedPreviewUrl) {
+        URL.revokeObjectURL(capturedPreviewUrl);
+      }
+    };
+  }, [capturedPreviewUrl]);
 
   // Flip Camera between front & rear
   const handleFlipCamera = () => {

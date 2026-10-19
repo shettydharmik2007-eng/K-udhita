@@ -17,7 +17,6 @@ import {
   AlertCircle,
   ArrowRight,
   CheckCircle,
-  Sparkles,
 } from 'lucide-react';
 
 interface Props {

@@ -12,19 +12,11 @@ import type {
   WeightMeasurementMethod,
 } from '../types';
 import {
-  Edit3,
-  Scale,
   Calendar,
   Clock,
   AlertCircle,
   Trash2,
   ArrowLeft,
-  CheckCircle,
-  Building2,
-  Thermometer,
-  ShieldCheck,
-  ShieldAlert,
-  HelpCircle,
   Save,
 } from 'lucide-react';
 
@@ -42,7 +34,6 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
   const [recordedWeight, setRecordedWeight] = useState<number | ''>('');
   const [weightUnit, setWeightUnit] = useState<WeightUnit>('kg');
   const [measurementMethod, setMeasurementMethod] = useState<WeightMeasurementMethod>('digital_scale');
-  const [remainingQuantityKg, setRemainingQuantityKg] = useState<number | ''>('');
   const [pickupDeadlineDate, setPickupDeadlineDate] = useState('');
   const [pickupDeadlineTime, setPickupDeadlineTime] = useState('');
   const [status, setStatus] = useState<FoodListingStatus>('available');
@@ -82,7 +73,6 @@ export const EditFoodListing: React.FC<Props> = ({ listingId, onNavigate }) => {
         setRecordedWeight(data.recordedWeight || data.remainingQuantityKg || '');
         setWeightUnit(data.weightUnit || 'kg');
         setMeasurementMethod(data.measurementMethod || 'digital_scale');
-        setRemainingQuantityKg(data.remainingQuantityKg);
         setStatus(data.status);
         setFoodCondition(data.foodCondition || 'suitable');
         setStorageCondition(data.storageCondition || 'hot_holding');

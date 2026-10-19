@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
 import { isFirebaseConfigured } from '../services/firebase';
 import {
   getAvailableWasteForRecyclers,
-  getWasteCollections,
   requestCollectionFromListing,
   claimWasteCollection,
   updateWasteCollectionWorkflow,
@@ -16,7 +15,6 @@ import { Modal } from '../components/common/Modal';
 import type {
   WasteCollection,
   WasteCategory,
-  WasteCollectionStatus,
   RecyclerType,
   FoodListing,
 } from '../types';
@@ -28,24 +26,18 @@ import {
   MapPin,
   Building2,
   Calendar,
-  AlertTriangle,
   CheckCircle2,
-  XCircle,
   RefreshCw,
   Search,
-  Filter,
   Flame,
   Leaf,
   Layers,
-  Sparkles,
   Info,
   ShieldAlert,
   ArrowRight,
   Phone,
   Check,
   Building,
-  User,
-  Sliders,
 } from 'lucide-react';
 
 interface Props {
@@ -96,13 +88,6 @@ const WASTE_CATEGORY_META: Record<
     icon: '♻️',
     desc: 'Non-compostable organic waste for controlled bio-processing',
   },
-};
-
-const RECYCLER_TYPE_LABELS: Record<RecyclerType, string> = {
-  biogas_plant: '🔥 Biogas Plant (Anaerobic Digester)',
-  composting_facility: '🌱 Bio-Composting Facility',
-  fertilizer_company: '🌾 Organic Fertilizer Manufacturer',
-  other: '♻️ Circular Waste Processing Unit',
 };
 
 export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
@@ -171,26 +156,32 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
   const [savingProfile, setSavingProfile] = useState(false);
 
   // Initialize profile form when userProfile changes
-  useEffect(() => {
-    if (userProfile) {
-      setProfileOrgName(userProfile.organizationName || userProfile.name || '');
-      setProfileRecyclerType(userProfile.recyclerType || 'biogas_plant');
-      setProfileContactPerson(userProfile.name || '');
-      setProfilePhone(userProfile.phone || '');
-      setProfileAddress(userProfile.address || '');
-      setProfileServiceArea(userProfile.serviceArea || 'Metro & Industrial Region, 35 km radius');
-      if (userProfile.acceptedCategories && userProfile.acceptedCategories.length > 0) {
-        setProfileAcceptedCategories(userProfile.acceptedCategories);
-      }
-      setProfileMaxCapacityKg(userProfile.maxCapacityKg || 5000);
-      setProfilePickupArrangements(
-        userProfile.pickupArrangements || 'Equipped with digital weighing scales and vacuum wet-waste tankers.'
-      );
+  const [syncedProfileUid, setSyncedProfileUid] = useState<string | null>(null);
+  if (userProfile && userProfile.uid !== syncedProfileUid) {
+    setSyncedProfileUid(userProfile.uid);
+    setProfileOrgName(userProfile.organizationName || userProfile.name || '');
+    setProfileRecyclerType(userProfile.recyclerType || 'biogas_plant');
+    setProfileContactPerson(userProfile.name || '');
+    setProfilePhone(userProfile.phone || '');
+    setProfileAddress(userProfile.address || '');
+    setProfileServiceArea(userProfile.serviceArea || 'Metro & Industrial Region, 35 km radius');
+    if (userProfile.acceptedCategories && userProfile.acceptedCategories.length > 0) {
+      setProfileAcceptedCategories(userProfile.acceptedCategories);
     }
-  }, [userProfile]);
+    setProfileMaxCapacityKg(userProfile.maxCapacityKg || 5000);
+    setProfilePickupArrangements(
+      userProfile.pickupArrangements || 'Equipped with digital weighing scales and vacuum wet-waste tankers.'
+    );
+  }
+
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Load live data from Firestore
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!isFirebaseConfigured) {
       setLoading(false);
       return;
@@ -208,11 +199,30 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [showNotification]);
 
   useEffect(() => {
-    loadData();
-  }, [currentUser]);
+    if (!isFirebaseConfigured) return;
+    let ignore = false;
+    getAvailableWasteForRecyclers()
+      .then((availableData) => {
+        if (!ignore) {
+          setWasteRecords(availableData.wasteRecords);
+          setUnsuitableListings(availableData.unsuitableListings);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (!ignore) {
+          console.error('[Recycler Dashboard] Data load failed:', err);
+          showNotification('error', 'Sync Failed', err.message || 'Could not load waste records');
+          setLoading(false);
+        }
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [currentUser, showNotification]);
 
   const handleManualRefresh = () => {
     setRefreshing(true);
@@ -229,7 +239,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
       return { isOverdue: false, label: pickupDeadline, urgency: 'normal' as const };
     }
 
-    const diffMinutes = Math.round((deadlineTime - Date.now()) / (1000 * 60));
+    const diffMinutes = Math.round((deadlineTime - currentTime) / (1000 * 60));
     if (diffMinutes <= 0) {
       return { isOverdue: true, label: 'Expired (Bio-Processing Priority)', urgency: 'overdue' as const };
     }

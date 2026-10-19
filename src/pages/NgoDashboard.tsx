@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
 import { isFirebaseConfigured } from '../services/firebase';
@@ -9,12 +9,9 @@ import {
   updateRequestStatus,
 } from '../services/foodService';
 import { StatusBadge } from '../components/common/StatusBadge';
-import { Modal } from '../components/common/Modal';
 import type {
   FoodListing,
   FoodRequest,
-  FoodCategory,
-  DietaryType,
 } from '../types';
 import {
   HeartHandshake,
@@ -29,18 +26,15 @@ import {
   CheckCircle2,
   RefreshCw,
   Search,
-  Filter,
   Calendar,
   Phone,
   Utensils,
   Layers,
-  Sparkles,
   Info,
   Check,
   XCircle,
   LogIn,
-  AlertTriangle,
-  ArrowRight,
+  ArrowLeft,
 } from 'lucide-react';
 
 interface Props {
@@ -80,8 +74,14 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
   // Listings & Requests State
   const [listings, setListings] = useState<FoodListing[]>([]);
   const [requests, setRequests] = useState<FoodRequest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isFirebaseConfigured);
   const [refreshing, setRefreshing] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Search & Filter state for Available Listings
   const [searchQuery, setSearchQuery] = useState('');
@@ -93,8 +93,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
   // Filter for My Requests tab
   const [requestsSubTab, setRequestsSubTab] = useState<'all' | 'accepted' | 'pending' | 'completed' | 'cancelled'>('all');
 
-  // Food Details Modal State
-  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  // Selected Food Listing for Full-Page Details View
   const [selectedListing, setSelectedListing] = useState<FoodListing | null>(null);
 
   // Claim Form State
@@ -109,7 +108,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
   // Load live listings and user's requests from Cloud Firestore
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
     if (!isFirebaseConfigured) {
       setLoading(false);
       return;
@@ -134,11 +133,33 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [currentUser, showNotification]);
 
   useEffect(() => {
-    loadDashboardData();
-  }, [currentUser]);
+    if (!isFirebaseConfigured) return;
+    let ignore = false;
+    Promise.all([
+      getFoodListings(),
+      currentUser ? getFoodRequests({ requesterId: currentUser.uid }) : Promise.resolve([]),
+    ])
+      .then(([allListings, myRequests]) => {
+        if (!ignore) {
+          setListings(allListings);
+          setRequests(myRequests);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (!ignore) {
+          console.error('[NGO Dashboard] Data load failed:', err);
+          showNotification('error', 'Sync Failed', err.message || 'Could not load surplus food data');
+          setLoading(false);
+        }
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [currentUser, showNotification]);
 
   const handleManualRefresh = () => {
     setRefreshing(true);
@@ -155,7 +176,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
       return { isOverdue: false, label: pickupDeadline, urgency: 'normal' as const, diffMinutes: 999 };
     }
 
-    const diffMs = deadlineTime - Date.now();
+    const diffMs = deadlineTime - currentTime;
     const diffMinutes = Math.round(diffMs / (1000 * 60));
 
     if (diffMinutes <= 0) {
@@ -186,7 +207,6 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
   // - remainingQuantityKg > 0
   // - NEVER show 'not_suitable' or 'requires_review'
   const suitableAvailableListings = useMemo(() => {
-    const now = Date.now();
     return listings.filter((item) => {
       // 1. Availability and quantity
       const isAvailable = item.status === 'available' && Number(item.remainingQuantityKg) > 0;
@@ -196,11 +216,11 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
 
       // 3. Deadline has not passed
       const deadlineMs = item.pickupDeadline ? new Date(item.pickupDeadline).getTime() : NaN;
-      const isNotExpired = isNaN(deadlineMs) || deadlineMs > now;
+      const isNotExpired = isNaN(deadlineMs) || deadlineMs > currentTime;
 
       return isAvailable && isSuitable && isNotExpired;
     });
-  }, [listings]);
+  }, [listings, currentTime]);
 
   // Extract unique locations from suitable listings for the filter dropdown
   const uniqueLocations = useMemo(() => {
@@ -278,15 +298,22 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
     });
   }, [requests, requestsSubTab]);
 
-  // Open Food Details Modal (Requirement 3)
+  // Open Food Details in Full-Page View (Requirement 2 & 3)
   const handleOpenDetails = (item: FoodListing) => {
     setSelectedListing(item);
     setClaimQuantityKg(item.remainingQuantityKg);
-    setClaimPortions(item.portions);
+    const estPortions = item.portions || Math.max(1, Math.round(Number(item.remainingQuantityKg) * 3));
+    setClaimPortions(estPortions);
     setPickupEstimate('Within 1-2 hours');
     setClaimNotes('');
     setClaimError(null);
-    setDetailsModalOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleBackToDashboard = () => {
+    setSelectedListing(null);
+    setClaimError(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Adjust portions proportionally when quantity changes
@@ -373,10 +400,11 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
         `Successfully requested ${reqKg} kg of ${selectedListing.foodName}. The hotel has been notified.`
       );
 
-      setDetailsModalOpen(false);
+      setSelectedListing(null);
       await loadDashboardData();
       // Switch to My Requests tab so NGO can monitor approval
       setActiveTab('my_requests');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
       console.error('[NGO Dashboard] Request submission failed:', err);
       const msg = err.message || 'Failed to submit food claim. Please try again.';
@@ -438,6 +466,430 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
       setActionLoadingId(null);
     }
   };
+
+  // DEDICATED FULL-PAGE FOOD LISTING DETAILS VIEW (Requirements 2, 3, 4, 5, 7, 8)
+  if (selectedListing) {
+    const catMeta = CATEGORY_META[selectedListing.category] || {
+      label: selectedListing.category.replace('_', ' '),
+      icon: '🍽️',
+    };
+    const storageInfo = STORAGE_LABELS[selectedListing.storageCondition] || {
+      label: selectedListing.storageCondition,
+      color: '#64748b',
+    };
+    const deadline = getDeadlineStatus(selectedListing.pickupDeadline);
+
+    return (
+      <div className="ngo-details-page-wrapper animate-fade-in">
+        {/* Top Navigation Bar with Prominent Back Button (Requirement 5) */}
+        <div className="ngo-details-nav-bar">
+          <button
+            type="button"
+            className="btn btn-outline flex items-center gap-2 hover:bg-slate-100 shadow-sm"
+            onClick={handleBackToDashboard}
+            title="Return to surplus marketplace"
+          >
+            <ArrowLeft size={18} />
+            <span className="font-bold">Back to NGO Panel</span>
+          </button>
+
+          <div className="ngo-details-breadcrumb text-xs text-slate-500 hidden sm:flex items-center gap-2">
+            <span>NGO Portal</span>
+            <span>/</span>
+            <span>Surplus Marketplace</span>
+            <span>/</span>
+            <span className="font-bold text-slate-800 truncate max-w-sm">{selectedListing.foodName}</span>
+          </div>
+        </div>
+
+        {/* 2-Column Responsive Near-Full-Screen Layout (Requirements 2 & 8) */}
+        <div className="ngo-details-grid">
+          {/* Main Column: Large Food Photo, Title, Hotel Contact, Spec Matrix, Location, Instructions */}
+          <div className="ngo-details-main-col">
+            {/* Hero Image Card */}
+            <div className="ngo-details-hero-card">
+              <div className="ngo-details-hero-image-wrap">
+                {selectedListing.imageUrl ? (
+                  <img
+                    src={selectedListing.imageUrl}
+                    alt={selectedListing.foodName}
+                    className="ngo-details-hero-img"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                      const ph = e.currentTarget.parentElement?.querySelector('.ngo-details-hero-placeholder');
+                      if (ph) (ph as HTMLElement).style.display = 'flex';
+                    }}
+                  />
+                ) : null}
+                <div
+                  className="ngo-details-hero-placeholder"
+                  style={{ display: selectedListing.imageUrl ? 'none' : 'flex' }}
+                >
+                  <span className="text-6xl mb-2">{catMeta.icon}</span>
+                  <span className="font-bold text-lg text-slate-600">{catMeta.label}</span>
+                </div>
+
+                {/* Overlaid Badges */}
+                <div className="ngo-card-badge-top-left">
+                  <span className={`tag-dietary ${selectedListing.dietaryType}`}>
+                    {selectedListing.dietaryType.toUpperCase()}
+                  </span>
+                  <span className="badge-neutral text-xs font-semibold px-2.5 py-1 rounded shadow-sm bg-white">
+                    {catMeta.icon} {catMeta.label}
+                  </span>
+                </div>
+
+                <div className="ngo-card-badge-top-right">
+                  <span className="badge-success shadow-sm flex items-center gap-1.5 px-3 py-1 font-semibold text-xs">
+                    <ShieldCheck size={15} />
+                    <span>Certified Suitable for Donation</span>
+                  </span>
+                </div>
+
+                <div className="ngo-card-badge-bottom">
+                  <span className={`countdown-badge ${deadline.urgency} text-sm px-3 py-1`}>
+                    <Clock size={15} />
+                    <span>{deadline.label}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Info Card: Dish Title, Hotel Contact & Specifications */}
+            <div className="ngo-details-info-card">
+              {/* Hotel / Donor Header */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-700 flex items-center justify-center font-bold">
+                    <Building2 size={20} />
+                  </div>
+                  <div>
+                    <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider block">
+                      Hospitality Partner
+                    </span>
+                    <strong className="text-base text-slate-900 font-bold">
+                      {selectedListing.donorOrg || selectedListing.donorName}
+                    </strong>
+                    {selectedListing.donorName && selectedListing.donorOrg && selectedListing.donorName !== selectedListing.donorOrg && (
+                      <span className="text-xs text-slate-500 block">
+                        Contact Person: {selectedListing.donorName}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {selectedListing.donorPhone && (
+                  <a
+                    href={`tel:${selectedListing.donorPhone}`}
+                    className="btn btn-outline btn-sm flex items-center gap-1.5 text-slate-700 hover:text-emerald"
+                  >
+                    <Phone size={14} className="text-emerald" />
+                    <span>{selectedListing.donorPhone}</span>
+                  </a>
+                )}
+              </div>
+
+              {/* Title & Description */}
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-2">
+                {selectedListing.foodName}
+              </h1>
+
+              {selectedListing.description && (
+                <p className="text-slate-600 text-sm leading-relaxed mb-6">
+                  {selectedListing.description}
+                </p>
+              )}
+
+              {/* Specifications Matrix */}
+              <div className="ngo-details-specs-matrix">
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Available Surplus</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-2xl font-black text-emerald-700">
+                      {selectedListing.remainingQuantityKg}
+                    </span>
+                    <span className="text-sm font-bold text-emerald-800">kg</span>
+                  </div>
+                  {selectedListing.recordedWeight && selectedListing.weightUnit === 'g' && (
+                    <small className="text-xs text-slate-500">
+                      Original entry: {selectedListing.recordedWeight}g
+                    </small>
+                  )}
+                  <small className="text-xs text-muted block mt-0.5">
+                    Verified by {selectedListing.measurementMethod?.replace('_', ' ') || 'digital scale'}
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Hunger Relief Impact</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-2xl font-black text-blue-700">
+                      ~{selectedListing.portions}
+                    </span>
+                    <span className="text-sm font-bold text-blue-800">meals</span>
+                  </div>
+                  <small className="text-xs text-muted block mt-0.5">
+                    Estimated beneficiaries nourished
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Pickup Deadline</span>
+                  <span className="text-base font-bold text-amber-700 block mt-1">
+                    {deadline.label}
+                  </span>
+                  <small className="text-xs text-slate-600 block mt-0.5">
+                    {new Date(selectedListing.pickupDeadline).toLocaleString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Storage Condition</span>
+                  <span className="text-base font-bold text-slate-900 block mt-1">
+                    {storageInfo.label}
+                  </span>
+                  <small className="text-xs text-muted block mt-0.5">
+                    Temperature managed post-service
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Preparation Time</span>
+                  <span className="text-base font-bold text-slate-900 block mt-1">
+                    {selectedListing.prepDate || 'Today'}
+                  </span>
+                  <small className="text-xs text-slate-600 block mt-0.5">
+                    Cooked at {selectedListing.prepTime || 'Banquet service'}
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Safety Status</span>
+                  <div className="flex items-center gap-1.5 text-emerald-700 font-bold text-sm mt-1">
+                    <ShieldCheck size={16} />
+                    <span>Suitable for Donation</span>
+                  </div>
+                  <small className="text-xs text-muted block mt-0.5">
+                    Food safety certified by supervisor
+                  </small>
+                </div>
+              </div>
+
+              {/* Pickup Address Box */}
+              <div className="mt-6 p-4 rounded-xl bg-slate-50 border border-slate-200">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-emerald-100 text-emerald-700 shrink-0 mt-0.5">
+                    <MapPin size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 mb-1">
+                      Pickup Address & Collection Premises
+                    </h3>
+                    <p className="text-sm text-slate-700 leading-relaxed font-medium">
+                      {selectedListing.location}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Chef & Collection Instructions Box */}
+              {selectedListing.pickupInstructions && (
+                <div className="mt-4 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900">
+                  <div className="flex items-start gap-3">
+                    <Utensils size={18} className="text-emerald-700 shrink-0 mt-0.5" />
+                    <div className="text-sm">
+                      <strong className="block text-emerald-900 font-bold mb-0.5">
+                        Chef & Hotel Collection Instructions:
+                      </strong>
+                      <span>{selectedListing.pickupInstructions}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Sidebar Column: Dedicated Request Food Form (Requirement 4) */}
+          <div className="ngo-details-sidebar-col">
+            <div className="ngo-request-action-card">
+              {alreadyClaimedListing ? (
+                <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 size={20} className="text-blue-700 shrink-0" />
+                    <h3 className="font-bold text-base text-blue-900">Active Claim in Progress</h3>
+                  </div>
+                  <p className="text-sm text-blue-800 mb-4 leading-relaxed">
+                    Your organization already has an active claim (
+                    <strong>{alreadyClaimedListing.status.toUpperCase()}</strong>) for{' '}
+                    <strong>{alreadyClaimedListing.requestedQuantityKg} kg</strong> (~
+                    {alreadyClaimedListing.requestedPortions} portions) of this food.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-block"
+                    onClick={() => {
+                      setSelectedListing(null);
+                      setActiveTab('my_requests');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                  >
+                    View in My Requests
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleConfirmClaim} className="flex flex-col gap-4">
+                  <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
+                    <div className="p-2 rounded-lg bg-emerald-50 text-emerald-700 shrink-0">
+                      <Utensils size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-extrabold text-slate-900">Request Food Surplus</h3>
+                      <span className="text-xs text-slate-500 block">Direct request to hotel donor</span>
+                    </div>
+                  </div>
+
+                  {claimError && (
+                    <div className="alert alert-danger text-sm flex items-center gap-2" role="alert">
+                      <AlertCircle size={16} className="shrink-0" />
+                      <span>{claimError}</span>
+                    </div>
+                  )}
+
+                  {/* Quantity to Claim */}
+                  <div className="form-group mb-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="form-label font-bold text-slate-800 text-sm mb-0">
+                        Quantity to Claim (kg) *
+                      </label>
+                      <span className="text-xs font-semibold text-emerald-700">
+                        Available: {selectedListing.remainingQuantityKg} kg
+                      </span>
+                    </div>
+                    <div className="input-with-icon">
+                      <Scale size={16} className="input-icon" />
+                      <input
+                        type="number"
+                        className="form-control"
+                        step="0.1"
+                        min="0.1"
+                        max={selectedListing.remainingQuantityKg}
+                        value={claimQuantityKg}
+                        onChange={(e) => handleQuantityChange(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    {/* Quick Percentage Presets */}
+                    <div className="flex items-center gap-1.5 mt-2">
+                      {[0.25, 0.5, 0.75, 1].map((ratio) => {
+                        const val = Math.round(Number(selectedListing.remainingQuantityKg) * ratio * 10) / 10;
+                        const label = ratio === 1 ? 'All' : `${ratio * 100}%`;
+                        return (
+                          <button
+                            key={ratio}
+                            type="button"
+                            className="btn btn-xs btn-outline py-0.5 px-2 text-xs"
+                            onClick={() => handleQuantityChange(String(val))}
+                          >
+                            {label} ({val} kg)
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Estimated Portions */}
+                  <div className="form-group mb-0">
+                    <label className="form-label font-bold text-slate-800 text-sm">
+                      Beneficiary Portions (Calculated) *
+                    </label>
+                    <div className="input-with-icon">
+                      <Users size={16} className="input-icon" />
+                      <input
+                        type="number"
+                        className="form-control"
+                        min="1"
+                        value={claimPortions}
+                        onChange={(e) => setClaimPortions(Number(e.target.value))}
+                        required
+                      />
+                    </div>
+                    <small className="text-xs text-slate-500 mt-1 block">
+                      Estimated warm meals provided to shelter beneficiaries
+                    </small>
+                  </div>
+
+                  {/* Arrival Window */}
+                  <div className="form-group mb-0">
+                    <label className="form-label font-bold text-slate-800 text-sm">
+                      Estimated Arrival Window *
+                    </label>
+                    <select
+                      className="form-control"
+                      value={pickupEstimate}
+                      onChange={(e) => setPickupEstimate(e.target.value)}
+                      required
+                    >
+                      <option value="Within 30-45 minutes">Within 30-45 minutes (Immediate Volunteer)</option>
+                      <option value="Within 1-2 hours">Within 1-2 hours</option>
+                      <option value="Within 3 hours">Within 3 hours (Before Deadline)</option>
+                      <option value="Today Evening">Today Evening</option>
+                    </select>
+                  </div>
+
+                  {/* Transport / Vehicle Remarks */}
+                  <div className="form-group mb-0">
+                    <label className="form-label font-semibold text-slate-800 text-sm">
+                      Collection Remarks / Transport Details (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="e.g. Arriving with insulated containers in white van"
+                      value={claimNotes}
+                      onChange={(e) => setClaimNotes(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Submit Button */}
+                  <div className="pt-2 flex flex-col gap-2">
+                    <button
+                      type="submit"
+                      className="btn btn-primary btn-block btn-lg btn-motion"
+                      disabled={submittingClaim || !claimQuantityKg || Number(claimQuantityKg) <= 0}
+                    >
+                      {submittingClaim ? (
+                        <span className="spinner-inline">Securing Request...</span>
+                      ) : (
+                        <span className="flex items-center justify-center gap-2">
+                          <Check size={18} />
+                          <span className="font-bold">Submit Food Request</span>
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-block"
+                      onClick={handleBackToDashboard}
+                      disabled={submittingClaim}
+                    >
+                      Cancel & Return to Listings
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page-container ngo-dashboard-wrapper animate-fade-in-up">
@@ -694,7 +1146,7 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
                     setSearchQuery('');
                     setCategoryFilter('all');
                     setLocationFilter('all');
-                    dietaryFilter !== 'all' && setDietaryFilter('all');
+                    setDietaryFilter('all');
                   }}
                 >
                   Reset Filters
@@ -1166,273 +1618,6 @@ export const NgoDashboard: React.FC<Props> = ({ onNavigate }) => {
             </div>
           )}
         </div>
-      )}
-
-      {/* =========================================================================
-          FOOD DETAILS & REQUEST MODAL (Requirements 3 & 4)
-          ========================================================================= */}
-      {detailsModalOpen && selectedListing && (
-        <Modal
-          isOpen={detailsModalOpen}
-          onClose={() => setDetailsModalOpen(false)}
-          title={`Food Details: ${selectedListing.foodName}`}
-          maxWidth="640px"
-        >
-          <div className="ngo-modal-detail-grid">
-            {/* Hero Image */}
-            <div className="ngo-modal-hero">
-              {selectedListing.imageUrl ? (
-                <img
-                  src={selectedListing.imageUrl}
-                  alt={selectedListing.foodName}
-                />
-              ) : (
-                <div className="ngo-card-img-placeholder">
-                  <span className="text-4xl mb-1">
-                    {CATEGORY_META[selectedListing.category]?.icon || '🍽️'}
-                  </span>
-                  <span className="font-bold text-slate-600">
-                    {CATEGORY_META[selectedListing.category]?.label || 'Surplus Food'}
-                  </span>
-                </div>
-              )}
-              <div className="ngo-card-badge-top-left">
-                <span className={`tag-dietary ${selectedListing.dietaryType}`}>
-                  {selectedListing.dietaryType.toUpperCase()}
-                </span>
-                <span className="badge-success shadow-sm flex items-center gap-1">
-                  <ShieldCheck size={13} />
-                  <span>Certified Suitable for Donation</span>
-                </span>
-              </div>
-            </div>
-
-            {/* Title & Donor Info */}
-            <div>
-              <div className="flex items-center gap-2 text-sm text-slate-600 font-bold mb-1">
-                <Building2 size={16} className="text-emerald" />
-                <span>{selectedListing.donorOrg || selectedListing.donorName}</span>
-                {selectedListing.donorPhone && (
-                  <span className="flex items-center gap-1 text-slate-500 ml-2">
-                    <Phone size={12} /> {selectedListing.donorPhone}
-                  </span>
-                )}
-              </div>
-              <h2 className="text-2xl font-extrabold text-slate-900">
-                {selectedListing.foodName}
-              </h2>
-            </div>
-
-            {/* Spec Matrix */}
-            <div className="ngo-modal-info-grid">
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Available Surplus</span>
-                <span className="ngo-modal-info-val text-emerald-700">
-                  {selectedListing.remainingQuantityKg} kg
-                </span>
-                <small className="text-xs text-muted">~{selectedListing.portions} portions</small>
-              </div>
-
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Pickup Deadline</span>
-                <span className="ngo-modal-info-val text-amber-700">
-                  {getDeadlineStatus(selectedListing.pickupDeadline).label}
-                </span>
-                <small className="text-xs text-muted">
-                  {new Date(selectedListing.pickupDeadline).toLocaleString([], {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </small>
-              </div>
-
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Storage Condition</span>
-                <span className="ngo-modal-info-val text-blue-700">
-                  {STORAGE_LABELS[selectedListing.storageCondition]?.label || selectedListing.storageCondition}
-                </span>
-              </div>
-
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Preparation Time</span>
-                <span className="ngo-modal-info-val text-slate-800">
-                  {selectedListing.prepDate || 'Today'} • {selectedListing.prepTime}
-                </span>
-              </div>
-            </div>
-
-            {/* Location Address */}
-            <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm">
-              <div className="flex items-start gap-2">
-                <MapPin size={18} className="text-emerald flex-shrink-0 mt-0.5" />
-                <div>
-                  <strong className="block text-slate-900">Pickup Address:</strong>
-                  <span className="text-slate-700">{selectedListing.location}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Chef / Collection Instructions */}
-            {selectedListing.pickupInstructions && (
-              <div className="ngo-pickup-instructions-box">
-                <strong>Collection Instructions:</strong> {selectedListing.pickupInstructions}
-              </div>
-            )}
-
-            {/* Description if available */}
-            {selectedListing.description && (
-              <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">
-                <strong>Description:</strong> {selectedListing.description}
-              </div>
-            )}
-
-            {/* REQUEST FOOD FORM (Requirement 4) */}
-            {alreadyClaimedListing ? (
-              <div className="alert alert-info flex items-center justify-between" role="alert">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 size={18} />
-                  <span>
-                    Your organization already has an active claim (
-                    <strong>{alreadyClaimedListing.status.toUpperCase()}</strong>) for {alreadyClaimedListing.requestedQuantityKg} kg of this food.
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  onClick={() => {
-                    setDetailsModalOpen(false);
-                    setActiveTab('my_requests');
-                  }}
-                >
-                  View in My Requests
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={handleConfirmClaim} className="ngo-claim-form-box">
-                <div className="ngo-claim-form-title">
-                  <Utensils size={18} className="text-emerald" />
-                  <span>Request Food for Community Distribution</span>
-                </div>
-
-                {claimError && (
-                  <div className="alert alert-danger text-sm flex items-center gap-2" role="alert">
-                    <AlertCircle size={16} />
-                    <span>{claimError}</span>
-                  </div>
-                )}
-
-                {/* Requested Quantity Input */}
-                <div className="form-row-2 gap-4">
-                  <div className="form-group">
-                    <label className="form-label font-bold text-slate-800">
-                      Quantity to Claim (kg) *
-                    </label>
-                    <div className="input-with-icon">
-                      <Scale size={16} className="input-icon" />
-                      <input
-                        type="number"
-                        className="form-control"
-                        step="0.1"
-                        min="0.1"
-                        max={selectedListing.remainingQuantityKg}
-                        value={claimQuantityKg}
-                        onChange={(e) => handleQuantityChange(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <small className="text-xs text-muted mt-1 block">
-                      Max available: {selectedListing.remainingQuantityKg} kg
-                    </small>
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label font-bold text-slate-800">
-                      Estimated Portions
-                    </label>
-                    <div className="input-with-icon">
-                      <Users size={16} className="input-icon" />
-                      <input
-                        type="number"
-                        className="form-control"
-                        min="1"
-                        value={claimPortions}
-                        onChange={(e) => setClaimPortions(Number(e.target.value))}
-                        required
-                      />
-                    </div>
-                    <small className="text-xs text-muted mt-1 block">
-                      Beneficiaries to be nourished
-                    </small>
-                  </div>
-                </div>
-
-                {/* Pickup Time Estimate */}
-                <div className="form-group">
-                  <label className="form-label font-bold text-slate-800">
-                    Estimated Pickup Time / Arrival Window *
-                  </label>
-                  <select
-                    className="form-control"
-                    value={pickupEstimate}
-                    onChange={(e) => setPickupEstimate(e.target.value)}
-                    required
-                  >
-                    <option value="Within 30-45 minutes">Within 30-45 minutes (Immediate Volunteer)</option>
-                    <option value="Within 1-2 hours">Within 1-2 hours</option>
-                    <option value="Within 3 hours">Within 3 hours (Before Deadline)</option>
-                    <option value="Today Evening">Today Evening</option>
-                  </select>
-                </div>
-
-                {/* Organization Remarks / Vehicle Info */}
-                <div className="form-group">
-                  <label className="form-label font-semibold text-slate-800">
-                    Collection Remarks / Vehicle Details (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    placeholder="e.g. Arriving with insulated containers in white van"
-                    value={claimNotes}
-                    onChange={(e) => setClaimNotes(e.target.value)}
-                  />
-                </div>
-
-                {/* Action Buttons */}
-                <div className="flex items-center justify-end gap-3 mt-2">
-                  <button
-                    type="button"
-                    className="btn btn-outline"
-                    onClick={() => setDetailsModalOpen(false)}
-                    disabled={submittingClaim}
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="btn btn-primary"
-                    disabled={submittingClaim || !claimQuantityKg || Number(claimQuantityKg) <= 0}
-                  >
-                    {submittingClaim ? (
-                      <>
-                        <div className="spinner-small" />
-                        <span>Securing Request...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Check size={16} />
-                        <span>Submit Food Request</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        </Modal>
       )}
     </div>
   );

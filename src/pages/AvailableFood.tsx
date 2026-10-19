@@ -17,11 +17,8 @@ import {
   AlertCircle,
   Thermometer,
   ArrowRight,
-  Sparkles,
-  SlidersHorizontal,
   X,
   PlusCircle,
-  Check,
 } from 'lucide-react';
 
 interface Props {
@@ -33,11 +30,17 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
   const { showNotification } = useNotification();
 
   const [listings, setListings] = useState<FoodListing[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isFirebaseConfigured);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedDietary, setSelectedDietary] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'deadline' | 'quantity'>('deadline');
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Request modal state
   const [requestModalOpen, setRequestModalOpen] = useState(false);
@@ -65,7 +68,24 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
   };
 
   useEffect(() => {
-    loadListings();
+    if (!isFirebaseConfigured) return;
+    let ignore = false;
+    getFoodListings()
+      .then((data) => {
+        if (!ignore) {
+          setListings(data);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (!ignore) {
+          console.error('Error fetching food listings:', err);
+          setLoading(false);
+        }
+      });
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   // Filter listings
@@ -83,7 +103,7 @@ export const AvailableFood: React.FC<Props> = ({ onNavigate }) => {
         selectedDietary === 'all' || item.dietaryType === selectedDietary;
 
       const deadlineMs = item.pickupDeadline ? new Date(item.pickupDeadline).getTime() : NaN;
-      const isNotExpired = isNaN(deadlineMs) || deadlineMs > Date.now();
+      const isNotExpired = isNaN(deadlineMs) || deadlineMs > currentTime;
 
       const isAvailable =
         item.status === 'available' &&

@@ -67,6 +67,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   );
 };
 
+// oxlint-disable-next-line react/only-export-components
 export const useNotification = (): NotificationContextType => {
   const context = useContext(NotificationContext);
   if (!context) {

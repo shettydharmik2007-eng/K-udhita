@@ -10,11 +10,7 @@ import {
   Flame,
   Globe2,
   RefreshCw,
-  Award,
-  ShieldCheck,
   AlertTriangle,
-  Building2,
-  TrendingUp,
   PieChart,
 } from 'lucide-react';
 
@@ -24,7 +20,7 @@ interface Props {
 
 export const ImpactDashboard: React.FC<Props> = ({ onNavigate }) => {
   const [metrics, setMetrics] = useState<ImpactMetrics | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isFirebaseConfigured);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,7 +43,25 @@ export const ImpactDashboard: React.FC<Props> = ({ onNavigate }) => {
   };
 
   useEffect(() => {
-    loadMetrics();
+    if (!isFirebaseConfigured) return;
+    let ignore = false;
+    fetchLiveImpactMetrics()
+      .then((data) => {
+        if (!ignore) {
+          setMetrics(data);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (!ignore) {
+          console.error('Failed to calculate impact metrics:', err);
+          setError(err.message || 'Could not fetch database records');
+          setLoading(false);
+        }
+      });
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   const totalDivertedKg = metrics

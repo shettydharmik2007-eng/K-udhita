@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
 import { isFirebaseConfigured } from '../services/firebase';
@@ -23,21 +23,15 @@ import {
   Clock,
   MapPin,
   Scale,
-  Users,
   Edit,
   Recycle,
   CheckCircle,
   XCircle,
-  AlertCircle,
   RefreshCw,
   Calendar,
   Layers,
   Thermometer,
-  ShieldCheck,
-  ShieldAlert,
-  HelpCircle,
   HeartHandshake,
-  CheckCircle2,
   X,
   AlertTriangle,
 } from 'lucide-react';
@@ -64,13 +58,19 @@ const CATEGORY_META: Record<string, { label: string; icon: string }> = {
 };
 
 export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) => {
-  const { currentUser, userProfile, isDonor } = useAuth();
+  const { currentUser, userProfile } = useAuth();
   const { showNotification } = useNotification();
 
   const [listings, setListings] = useState<FoodListing[]>([]);
   const [requests, setRequests] = useState<FoodRequest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isFirebaseConfigured && !!currentUser);
   const [refreshing, setRefreshing] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Filter state
   const [activeTab, setActiveTab] = useState<
@@ -100,7 +100,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     category: string;
   } | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!currentUser || !isFirebaseConfigured) {
       setLoading(false);
       return;
@@ -119,11 +119,33 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [currentUser, showNotification]);
 
   useEffect(() => {
-    loadData();
-  }, [currentUser]);
+    if (!currentUser || !isFirebaseConfigured) return;
+    let ignore = false;
+    Promise.all([
+      getFoodListings({ donorId: currentUser.uid }),
+      getFoodRequests({ donorId: currentUser.uid }),
+    ])
+      .then(([listingsData, requestsData]) => {
+        if (!ignore) {
+          setListings(listingsData);
+          setRequests(requestsData);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (!ignore) {
+          console.error('Failed to load hotel dashboard data:', err);
+          showNotification('error', 'Data Load Error', err.message || 'Could not fetch hotel records');
+          setLoading(false);
+        }
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [currentUser, showNotification]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -157,7 +179,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
       return { isOverdue: false, label: pickupDeadline, urgency: 'normal' as const };
     }
 
-    const diffMs = deadlineTime - Date.now();
+    const diffMs = deadlineTime - currentTime;
     const diffMinutes = Math.round(diffMs / (1000 * 60));
 
     if (diffMinutes <= 0) {
@@ -184,7 +206,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     requestId: string,
     listingId: string,
     newStatus: FoodRequestStatus,
-    requestedKg: number
+    _requestedKg: number
   ) => {
     if (!currentUser) return;
     try {

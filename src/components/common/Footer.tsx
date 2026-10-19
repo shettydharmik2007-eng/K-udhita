@@ -5,6 +5,8 @@ interface Props {
   onNavigate: (page: string) => void;
 }
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 export const Footer: React.FC<Props> = ({ onNavigate }) => {
   return (
     <footer className="footer-wrapper">
@@ -95,7 +97,7 @@ export const Footer: React.FC<Props> = ({ onNavigate }) => {
 
         <div className="footer-bottom">
           <div className="container footer-bottom-flex">
-            <p>© {new Date().getFullYear()} Kṣudhita System – College Capstone Project. Aligned with UN SDGs.</p>
+            <p>© {CURRENT_YEAR} Kṣudhita System – College Capstone Project. Aligned with UN SDGs.</p>
             <div className="footer-badges">
               <span className="pill-badge">SDG 2 Zero Hunger</span>
               <span className="pill-badge">SDG 12 Circular Loop</span>

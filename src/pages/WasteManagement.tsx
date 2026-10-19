@@ -16,14 +16,8 @@ import {
   Truck,
   PlusCircle,
   AlertCircle,
-  Clock,
-  MapPin,
   Scale,
-  Building2,
-  CheckCircle,
   Info,
-  RefreshCw,
-  ExternalLink,
 } from 'lucide-react';
 
 interface Props {
@@ -31,11 +25,11 @@ interface Props {
 }
 
 export const WasteManagement: React.FC<Props> = ({ onNavigate }) => {
-  const { currentUser, userProfile, isDonor, isWastePartner } = useAuth();
+  const { currentUser, userProfile, isWastePartner } = useAuth();
   const { showNotification } = useNotification();
 
   const [wasteList, setWasteList] = useState<WasteCollection[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isFirebaseConfigured);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
@@ -66,7 +60,24 @@ export const WasteManagement: React.FC<Props> = ({ onNavigate }) => {
   };
 
   useEffect(() => {
-    loadWaste();
+    if (!isFirebaseConfigured) return;
+    let ignore = false;
+    getWasteCollections()
+      .then((data) => {
+        if (!ignore) {
+          setWasteList(data);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (!ignore) {
+          console.error('Failed to load waste collections:', err);
+          setLoading(false);
+        }
+      });
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   const handleCreateWaste = async (e: React.FormEvent) => {
