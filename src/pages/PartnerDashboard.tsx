@@ -40,6 +40,9 @@ import {
   Check,
   Building,
   HeartHandshake,
+  ArrowLeft,
+  Utensils,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface Props {
@@ -428,15 +431,30 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     .filter((c) => c.status === 'processed' || c.status === 'completed')
     .reduce((sum, c) => sum + (Number(c.actualCollectedKg) || Number(c.quantityKg)), 0);
 
-  // Action: Open Details Modal
-  const handleOpenDetails = (item: UnifiedAvailableWaste) => {
-    setSelectedItemForDetails({
-      isListing: item.isListing,
-      listing: item.listing,
-      record: item.record,
-    });
+  // Action: Open Details View (Dedicated Full-Screen View)
+  const handleOpenDetails = (item: UnifiedAvailableWaste | WasteCollection) => {
+    if ('hotelName' in item) {
+      setSelectedItemForDetails({
+        isListing: item.isListing,
+        listing: item.listing,
+        record: item.record,
+      });
+    } else {
+      setSelectedItemForDetails({
+        isListing: false,
+        record: item,
+      });
+    }
     setCollectionNotes('');
     setDetailsModalOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Action: Back to Recycle Panel (returns to dashboard without resetting filters)
+  const handleBackToDashboard = () => {
+    setDetailsModalOpen(false);
+    setSelectedItemForDetails(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Action: Submit Collection Request (Requirement 4)
@@ -479,6 +497,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
         'Your pickup request has been dispatched to the hotel management.'
       );
       setDetailsModalOpen(false);
+      setSelectedItemForDetails(null);
       await loadData();
       setActiveTab('active');
     } catch (err: any) {
@@ -688,6 +707,417 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
             >
               Register Facility
             </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // DEDICATED FULL-PAGE RECYCLE REQUEST DETAILS VIEW (Matches NGO Panel Layout)
+  // =========================================================================
+  if (detailsModalOpen && selectedItemForDetails) {
+    const itemListing = selectedItemForDetails.listing;
+    const itemRecord = selectedItemForDetails.record;
+
+    const foodName =
+      itemListing?.foodName ||
+      itemRecord?.foodName ||
+      'Organic Waste Batch';
+    const imageUrl = itemListing?.imageUrl || itemRecord?.imageUrl;
+    const donorOrg =
+      itemListing?.donorOrg ||
+      itemRecord?.donorOrg ||
+      itemListing?.donorName ||
+      'Hospitality Partner';
+    const donorPhone = itemListing?.donorPhone || itemRecord?.donorPhone;
+    const donorName = itemListing?.donorName;
+    const location =
+      itemListing?.location ||
+      itemRecord?.location ||
+      'Hotel Collection Area';
+    const quantityKg =
+      itemListing?.remainingQuantityKg ??
+      itemRecord?.quantityKg ??
+      0;
+    const pickupDeadline =
+      itemListing?.pickupDeadline ||
+      itemRecord?.pickupDeadline;
+    const deadline = getDeadlineStatus(pickupDeadline);
+    const description = itemListing?.description || itemRecord?.notes;
+    const pickupInstructions =
+      itemListing?.pickupInstructions || itemRecord?.notes;
+    const storageCondition = itemListing?.storageCondition;
+    const prepDate = itemListing?.prepDate;
+    const prepTime = itemListing?.prepTime;
+
+    const rawCategory = itemListing?.category
+      ? mapFoodCategoryToWaste(itemListing.category)
+      : (itemRecord?.category || 'mixed_organic');
+    const catMeta = WASTE_CATEGORY_META[rawCategory as WasteCategory] || {
+      label: String(rawCategory).replace('_', ' '),
+      icon: '♻️',
+      desc: 'Organic surplus material',
+    };
+    const isExpired = itemListing ? isListingExpired(itemListing) : false;
+
+    // Check if user facility already has an active collection for this item
+    const activeCollectionForThis = activeCollections.find(
+      (c) =>
+        (itemListing && c.sourceListingId === itemListing.id) ||
+        (itemRecord && c.id === itemRecord.id)
+    );
+
+    return (
+      <div className="ngo-details-page-wrapper animate-fade-in">
+        {/* Top Navigation Bar with Prominent Back Button */}
+        <div className="ngo-details-nav-bar">
+          <button
+            type="button"
+            className="btn btn-outline flex items-center gap-2 hover:bg-slate-100 shadow-sm"
+            onClick={handleBackToDashboard}
+            title="Return to recycle panel"
+          >
+            <ArrowLeft size={18} />
+            <span className="font-bold">Back to Recycle Panel</span>
+          </button>
+
+          <div className="ngo-details-breadcrumb text-xs text-slate-500 hidden sm:flex items-center gap-2">
+            <span>Recycle Portal</span>
+            <span>/</span>
+            <span>Organic Waste Marketplace</span>
+            <span>/</span>
+            <span className="font-bold text-slate-800 truncate max-w-sm">{foodName}</span>
+          </div>
+        </div>
+
+        {/* 2-Column Responsive Near-Full-Screen Layout */}
+        <div className="ngo-details-grid">
+          {/* Main Column: Media, Title, Donor Contact, Spec Matrix, Location, Instructions */}
+          <div className="ngo-details-main-col">
+            {/* Hero Image Card */}
+            <div className="ngo-details-hero-card">
+              <div className="ngo-details-hero-image-wrap">
+                {imageUrl ? (
+                  <img
+                    src={imageUrl}
+                    alt={foodName}
+                    className="ngo-details-hero-img"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                      const ph = e.currentTarget.parentElement?.querySelector('.ngo-details-hero-placeholder');
+                      if (ph) (ph as HTMLElement).style.display = 'flex';
+                    }}
+                  />
+                ) : null}
+                <div
+                  className="ngo-details-hero-placeholder"
+                  style={{ display: imageUrl ? 'none' : 'flex' }}
+                >
+                  <span className="text-6xl mb-2">{catMeta.icon}</span>
+                  <span className="font-bold text-lg text-slate-600">{catMeta.label}</span>
+                </div>
+
+                {/* Overlaid Badges */}
+                <div className="ngo-card-badge-top-left">
+                  <span className="badge-neutral text-xs font-semibold px-2.5 py-1 rounded shadow-sm bg-white text-slate-800">
+                    {catMeta.icon} {catMeta.label}
+                  </span>
+                </div>
+
+                <div className="ngo-card-badge-top-right">
+                  <span className="badge-danger shadow-sm flex items-center gap-1.5 px-3 py-1 font-semibold text-xs bg-red-100 text-red-800">
+                    <ShieldAlert size={15} />
+                    <span>{isExpired ? 'Expired Surplus (Recycle Priority)' : 'Not Suitable for Human Donation'}</span>
+                  </span>
+                </div>
+
+                <div className="ngo-card-badge-bottom">
+                  <span className={`countdown-badge ${deadline.urgency} text-sm px-3 py-1`}>
+                    <Clock size={15} />
+                    <span>{deadline.label}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Info Card: Dish / Batch Title, Donor Contact & Specifications */}
+            <div className="ngo-details-info-card">
+              {/* Hotel / Donor Header */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-teal-50 text-teal-700 flex items-center justify-center font-bold">
+                    <Building2 size={20} />
+                  </div>
+                  <div>
+                    <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider block">
+                      Hospitality Partner / Donor
+                    </span>
+                    <strong className="text-base text-slate-900 font-bold">
+                      {donorOrg}
+                    </strong>
+                    {donorName && donorName !== donorOrg && (
+                      <span className="text-xs text-slate-500 block">
+                        Contact Person: {donorName}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {donorPhone && (
+                  <a
+                    href={`tel:${donorPhone}`}
+                    className="btn btn-outline btn-sm flex items-center gap-1.5 text-slate-700 hover:text-teal-700"
+                  >
+                    <Phone size={14} className="text-teal-700" />
+                    <span>{donorPhone}</span>
+                  </a>
+                )}
+              </div>
+
+              {/* Title & Description */}
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-2">
+                {foodName}
+              </h1>
+
+              {description && (
+                <p className="text-slate-600 text-sm leading-relaxed mb-6">
+                  {description}
+                </p>
+              )}
+
+              {/* Safety Alert Banner */}
+              <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl flex items-center gap-3 mb-6">
+                <ShieldAlert size={24} className="text-red-600 flex-shrink-0" />
+                <div className="text-xs text-red-900">
+                  <strong>Certified For Organic Recycling & Processing Only:</strong>
+                  <div>This batch has exceeded human consumption safety thresholds and is designated strictly for biogas digestion, composting, or bio-fuel conversion.</div>
+                </div>
+              </div>
+
+              {/* Specifications Matrix */}
+              <div className="ngo-details-specs-matrix">
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Available Biomass</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-2xl font-black text-teal-700">
+                      {quantityKg}
+                    </span>
+                    <span className="text-sm font-bold text-teal-800">kg</span>
+                  </div>
+                  <small className="text-xs text-muted block mt-0.5">
+                    Bulk organic material weight
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Circular Conversion</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-xl font-black text-blue-700">
+                      Bio-Energy / Compost
+                    </span>
+                  </div>
+                  <small className="text-xs text-muted block mt-0.5">
+                    Diverts waste from landfill
+                  </small>
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Pickup Deadline</span>
+                  <span className="text-base font-bold text-amber-700 block mt-1">
+                    {deadline.label}
+                  </span>
+                  {pickupDeadline && (
+                    <small className="text-xs text-slate-600 block mt-0.5">
+                      {formatTimestamp(pickupDeadline)}
+                    </small>
+                  )}
+                </div>
+
+                <div className="ngo-spec-box">
+                  <span className="ngo-spec-label">Waste Stream</span>
+                  <span className="text-base font-bold text-slate-900 block mt-1">
+                    {catMeta.label}
+                  </span>
+                  <small className="text-xs text-muted block mt-0.5">
+                    {catMeta.desc}
+                  </small>
+                </div>
+
+                {prepDate && (
+                  <div className="ngo-spec-box">
+                    <span className="ngo-spec-label">Preparation / Kitchen Date</span>
+                    <span className="text-base font-bold text-slate-900 block mt-1">
+                      {prepDate}
+                    </span>
+                    {prepTime && (
+                      <small className="text-xs text-slate-600 block mt-0.5">
+                        Prepared at {prepTime}
+                      </small>
+                    )}
+                  </div>
+                )}
+
+                {storageCondition && (
+                  <div className="ngo-spec-box">
+                    <span className="ngo-spec-label">Storage Holding</span>
+                    <span className="text-base font-bold text-slate-900 block mt-1 capitalize">
+                      {storageCondition.replace('_', ' ')}
+                    </span>
+                    <small className="text-xs text-muted block mt-0.5">
+                      Preserved on hotel site
+                    </small>
+                  </div>
+                )}
+              </div>
+
+              {/* Pickup Address Box */}
+              <div className="mt-6 p-4 rounded-xl bg-slate-50 border border-slate-200">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-teal-100 text-teal-700 shrink-0 mt-0.5">
+                    <MapPin size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 mb-1">
+                      Pickup Address & Facility Dock
+                    </h3>
+                    <p className="text-sm text-slate-700 leading-relaxed font-medium">
+                      {location}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Facility Instructions Box */}
+              {pickupInstructions && (
+                <div className="mt-4 p-4 rounded-xl bg-teal-50 border border-teal-200 text-teal-900">
+                  <div className="flex items-start gap-3">
+                    <Truck size={18} className="text-teal-700 shrink-0 mt-0.5" />
+                    <div className="text-sm">
+                      <strong className="block text-teal-900 font-bold mb-0.5">
+                        Facility & Dispatch Instructions:
+                      </strong>
+                      <span>{pickupInstructions}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Sidebar Column: Dedicated Request Collection Form */}
+          <div className="ngo-details-sidebar-col">
+            <div className="ngo-request-action-card">
+              {activeCollectionForThis ? (
+                <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 text-teal-950">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 size={20} className="text-teal-700 shrink-0" />
+                    <h3 className="font-bold text-base text-teal-900">Collection In Progress</h3>
+                  </div>
+                  <p className="text-sm text-teal-800 mb-4 leading-relaxed">
+                    Your facility currently has an active collection request (
+                    <strong>{(activeCollectionForThis.status || 'collection_requested').toUpperCase()}</strong>) for{' '}
+                    <strong>{activeCollectionForThis.actualCollectedKg || activeCollectionForThis.quantityKg} kg</strong> of this organic waste batch.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-block mb-2"
+                    onClick={() => {
+                      setDetailsModalOpen(false);
+                      setSelectedItemForDetails(null);
+                      setActiveTab('active');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                  >
+                    View in Active Collections
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-block"
+                    onClick={handleBackToDashboard}
+                  >
+                    Back to Recycle Panel
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleConfirmCollectionRequest} className="flex flex-col gap-4">
+                  <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
+                    <div className="p-2 rounded-lg bg-teal-50 text-teal-700 shrink-0">
+                      <Truck size={20} />
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-bold text-slate-900">Dispatch Request</h2>
+                      <span className="text-xs text-muted">Coordinate logistics & pickup</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-teal-50/70 border border-teal-200/80 text-xs text-teal-900 flex items-start gap-2">
+                    <Info size={16} className="text-teal-700 shrink-0 mt-0.5" />
+                    <span>
+                      Dispatches an immediate logistics collection order to <strong>{donorOrg}</strong> for <strong>{quantityKg} kg</strong> of organic waste material.
+                    </span>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label font-bold text-slate-800">
+                      Designated Processing Facility
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      value={userProfile?.organizationName || 'Recycling Plant'}
+                      disabled
+                    />
+                    <small className="text-xs text-muted mt-1 block">
+                      Facility associated with your logged-in recycler profile
+                    </small>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label font-bold text-slate-800">
+                      Fleet & Driver Notes (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="e.g. Tanker vehicle KA-04-E-5678, Driver Rajesh"
+                      value={collectionNotes}
+                      onChange={(e) => setCollectionNotes(e.target.value)}
+                    />
+                    <small className="text-xs text-muted mt-1 block">
+                      Vehicle registration, driver details, or expected arrival ETA
+                    </small>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="btn btn-primary btn-block flex items-center justify-center gap-2 py-3"
+                    disabled={submittingRequest}
+                  >
+                    {submittingRequest ? (
+                      <>
+                        <div className="spinner-small" />
+                        <span>Submitting Request...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Truck size={16} />
+                        <span>Confirm Collection Request</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-block"
+                    onClick={handleBackToDashboard}
+                    disabled={submittingRequest}
+                  >
+                    Back to Recycle Panel
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -986,7 +1416,11 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                 return (
                   <div key={item.id} className="recycler-card">
                     {/* Media wrap */}
-                    <div className="ngo-card-image-wrap">
+                    <div
+                      className="ngo-card-image-wrap cursor-pointer"
+                      onClick={() => handleOpenDetails(item)}
+                      title="Click to view details"
+                    >
                       {item.imageUrl ? (
                         <img
                           src={item.imageUrl}
@@ -1051,7 +1485,13 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                       </div>
 
                       {/* Food / Waste Name */}
-                      <h3 className="ngo-card-title">{item.foodName}</h3>
+                      <h3
+                        className="ngo-card-title cursor-pointer hover:text-teal-700"
+                        onClick={() => handleOpenDetails(item)}
+                        title="Click to view details"
+                      >
+                        {item.foodName}
+                      </h3>
 
                       {/* Estimated Weight */}
                       <div className="ngo-weight-pill-box" style={{ background: '#f0fdfa', borderColor: '#ccfbf1' }}>
@@ -1206,7 +1646,11 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                               </span>
                             )}
                           </div>
-                          <h3 className="text-lg font-bold text-slate-900 mt-0.5">
+                          <h3
+                            className="text-lg font-bold text-slate-900 mt-0.5 cursor-pointer hover:text-teal-700"
+                            onClick={() => handleOpenDetails(item)}
+                            title="Click to view details"
+                          >
                             {item.foodName}
                           </h3>
                         </div>
@@ -1287,13 +1731,22 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                             <Clock size={14} />
                             <span>Awaiting hotel kitchen supervisor confirmation...</span>
                           </div>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline-danger"
-                            onClick={() => handleCancelRequest(item)}
-                          >
-                            Cancel Request
-                          </button>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline"
+                              onClick={() => handleOpenDetails(item)}
+                            >
+                              View Details
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-danger"
+                              onClick={() => handleCancelRequest(item)}
+                            >
+                              Cancel Request
+                            </button>
+                          </div>
                         </>
                       )}
 
@@ -1303,13 +1756,22 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                             <CheckCircle2 size={16} />
                             <span>Hotel confirmed dispatch. Proceed to collect waste.</span>
                           </div>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-primary"
-                            onClick={() => handleOpenMarkCollected(item)}
-                          >
-                            <Scale size={14} /> Mark as Collected (Enter Weighed Kg)
-                          </button>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline"
+                              onClick={() => handleOpenDetails(item)}
+                            >
+                              View Details
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-primary"
+                              onClick={() => handleOpenMarkCollected(item)}
+                            >
+                              <Scale size={14} /> Mark as Collected (Enter Weighed Kg)
+                            </button>
+                          </div>
                         </>
                       )}
 
@@ -1392,7 +1854,13 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                     <tr key={item.id}>
                       <td>
                         <strong>{item.donorOrg}</strong>
-                        <div className="text-xs text-muted truncate max-w-xs">{item.foodName}</div>
+                        <div
+                          className="text-xs text-muted truncate max-w-xs cursor-pointer hover:text-teal-700 font-semibold"
+                          onClick={() => handleOpenDetails(item)}
+                          title="Click to view details"
+                        >
+                          {item.foodName}
+                        </div>
                       </td>
                       <td>
                         <span className="badge-neutral text-xs">
@@ -1638,155 +2106,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
         </div>
       )}
 
-      {/* =========================================================================
-          MODAL 1: VIEW DETAILS & REQUEST COLLECTION
-          ========================================================================= */}
-      {detailsModalOpen && selectedItemForDetails && (
-        <Modal
-          isOpen={detailsModalOpen}
-          onClose={() => setDetailsModalOpen(false)}
-          title={`Waste Details: ${
-            selectedItemForDetails.listing?.foodName ||
-            selectedItemForDetails.record?.foodName ||
-            'Organic Waste Batch'
-          }`}
-          maxWidth="600px"
-        >
-          <div className="flex flex-col gap-4">
-            {/* Safety Alert Banner (Requirement 2 & 9) */}
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3">
-              <ShieldAlert size={24} className="text-red-600 flex-shrink-0" />
-              <div className="text-xs text-red-900">
-                <strong>Certified Not Suitable for Human Donation:</strong>
-                <div>This batch has exceeded safety holding times or donation deadlines and is designated strictly for biogas conversion, composting, or organic recycling.</div>
-              </div>
-            </div>
 
-            {/* Food Image Preview if present */}
-            {(selectedItemForDetails.listing?.imageUrl || selectedItemForDetails.record?.imageUrl) && (
-              <div className="flex items-center gap-3 p-2 bg-slate-100 rounded-lg border border-slate-200">
-                <img
-                  src={selectedItemForDetails.listing?.imageUrl || selectedItemForDetails.record?.imageUrl}
-                  alt={selectedItemForDetails.listing?.foodName || selectedItemForDetails.record?.foodName}
-                  className="w-16 h-16 object-cover rounded-md shadow-sm"
-                />
-                <div>
-                  <div className="font-bold text-slate-800 text-sm">
-                    {selectedItemForDetails.listing?.foodName || selectedItemForDetails.record?.foodName}
-                  </div>
-                  <div className="text-xs text-muted">
-                    {selectedItemForDetails.listing?.remainingQuantityKg || selectedItemForDetails.record?.quantityKg} kg organic surplus
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Spec Matrix */}
-            <div className="ngo-modal-info-grid">
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Estimated Quantity</span>
-                <span className="ngo-modal-info-val text-teal-800">
-                  {selectedItemForDetails.listing?.remainingQuantityKg ||
-                    selectedItemForDetails.record?.quantityKg}{' '}
-                  kg
-                </span>
-              </div>
-
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Hotel / Banquet Donor</span>
-                <span className="ngo-modal-info-val">
-                  {selectedItemForDetails.listing?.donorOrg ||
-                    selectedItemForDetails.record?.donorOrg}
-                </span>
-                {selectedItemForDetails.listing?.donorPhone && (
-                  <small className="text-xs text-muted flex items-center gap-1 mt-0.5">
-                    <Phone size={11} /> {selectedItemForDetails.listing.donorPhone}
-                  </small>
-                )}
-              </div>
-
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Pickup Location</span>
-                <span className="ngo-modal-info-val text-xs text-slate-700">
-                  {selectedItemForDetails.listing?.location ||
-                    selectedItemForDetails.record?.location}
-                </span>
-              </div>
-
-              <div className="ngo-modal-info-item">
-                <span className="ngo-modal-info-label">Collection Window</span>
-                <span className="ngo-modal-info-val text-amber-700">
-                  {getDeadlineStatus(
-                    selectedItemForDetails.listing?.pickupDeadline ||
-                      selectedItemForDetails.record?.pickupDeadline
-                  ).label}
-                </span>
-              </div>
-            </div>
-
-            {/* Collection Request Form */}
-            <form onSubmit={handleConfirmCollectionRequest} className="ngo-claim-form-box">
-              <div className="ngo-claim-form-title">
-                <Truck size={18} className="text-teal-700" />
-                <span>Request Waste Collection Dispatch</span>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label font-bold text-slate-800">
-                  Designated Processing Facility
-                </label>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={userProfile?.organizationName || 'Recycling Plant'}
-                  disabled
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label font-bold text-slate-800">
-                  Fleet & Driver Notes (Optional)
-                </label>
-                <input
-                  type="text"
-                  className="form-control"
-                  placeholder="e.g. Tanker vehicle KA-04-E-5678, Driver Rajesh"
-                  value={collectionNotes}
-                  onChange={(e) => setCollectionNotes(e.target.value)}
-                />
-              </div>
-
-              <div className="flex justify-end gap-3 mt-2">
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => setDetailsModalOpen(false)}
-                  disabled={submittingRequest}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submittingRequest}
-                >
-                  {submittingRequest ? (
-                    <>
-                      <div className="spinner-small" />
-                      <span>Submitting Request...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Check size={16} />
-                      <span>Confirm Collection Request</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </Modal>
-      )}
 
       {/* =========================================================================
           MODAL 2: MARK AS COLLECTED (Record Actual Weighed Kg - Requirement 6)
