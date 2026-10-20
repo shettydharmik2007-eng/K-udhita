@@ -153,10 +153,10 @@ service cloud.firestore {
         (
           resource.data.status in ['pending', 'available'] &&
           request.resource.data.partnerId == request.auth.uid &&
-          request.resource.data.donorId == resource.data.donorId
+          (!('donorId' in resource.data) || request.resource.data.donorId == resource.data.donorId)
         ) || (
           resource.data.partnerId == request.auth.uid &&
-          request.resource.data.donorId == resource.data.donorId
+          (!('donorId' in resource.data) || request.resource.data.donorId == resource.data.donorId)
         ) ||
         isAdmin()
       );

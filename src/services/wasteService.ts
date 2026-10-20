@@ -175,7 +175,7 @@ export async function getAvailableWasteForRecyclers(): Promise<{
   // Track listings already processed into wasteCollections to prevent duplicates
   const existingSourceListingIds = new Set(
     wasteRecords
-      .filter((w) => w.status !== 'cancelled' && Boolean(w.sourceListingId))
+      .filter((w) => w.status !== 'cancelled' && w.status !== 'rejected' && Boolean(w.sourceListingId))
       .map((w) => w.sourceListingId!)
   );
 
@@ -260,19 +260,65 @@ export async function requestCollectionFromListing(
 ): Promise<string> {
   if (!isFirebaseConfigured || !db) throw new Error('Firestore is not configured');
 
-  if (partner.role !== 'waste_partner' && partner.role !== 'admin') {
+  const partnerUid = partner?.uid || auth?.currentUser?.uid;
+  if (!partnerUid) {
+    throw new Error('Authentication required. Please sign in with your recycler credentials.');
+  }
+
+  if (partner?.role !== 'waste_partner' && partner?.role !== 'admin') {
     throw new Error('Only authorized waste recycling partners can request organic waste collections.');
   }
 
   const listingRef = doc(db, 'foodListings', listing.id);
   const wasteCol = collection(db, 'wasteCollections');
 
+  // Pre-check for duplicate active requests for this food listing
+  try {
+    const existingReqQuery = query(
+      wasteCol,
+      where('sourceListingId', '==', listing.id)
+    );
+    const existingSnap = await withTimeout(
+      getDocs(existingReqQuery),
+      4000,
+      'Duplicate request check timed out'
+    );
+    const activeExisting = existingSnap.docs.find((d) => {
+      const st = d.data().status;
+      return (
+        st === 'collection_requested' ||
+        st === 'accepted' ||
+        st === 'collected' ||
+        st === 'processing' ||
+        st === 'processed' ||
+        st === 'completed'
+      );
+    });
+
+    if (activeExisting) {
+      const data = activeExisting.data();
+      const isMine = data.partnerId === partnerUid;
+      if (data.status === 'processed' || data.status === 'completed') {
+        throw new Error('This surplus food has already been collected and processed.');
+      }
+      throw new Error(
+        isMine
+          ? 'Your facility already has an active collection request for this batch. Please view "Active Operations".'
+          : 'Another recycling partner has already requested collection for this organic waste batch.'
+      );
+    }
+  } catch (err: any) {
+    if (err.message && (err.message.includes('already has an active') || err.message.includes('already been collected'))) {
+      throw err;
+    }
+    console.warn('[Waste Service] Duplicate check warning, proceeding to transaction:', err);
+  }
+
   const wasteId = await runTransaction(db, async (transaction) => {
     const snap = await transaction.get(listingRef);
-    if (!snap.exists()) throw new Error('Listing does not exist or has been removed');
+    if (!snap.exists()) throw new Error('Listing does not exist or has been removed.');
 
     const data = snap.data() as FoodListing;
-
     const isExpired = isListingExpired(data);
 
     // Strict safety check: Never process active donation surplus as waste UNLESS it has expired
@@ -298,34 +344,44 @@ export async function requestCollectionFromListing(
       updatedAt: serverTimestamp(),
     });
 
-    // Create waste collection record assigned to this partner
+    // Create waste collection record assigned to this partner with sanitized payload
     const newWasteRef = doc(wasteCol);
     const wasteCat = mapFoodCategoryToWaste(data.category);
+    const partnerName = partner?.organizationName || partner?.name || 'Recycling Partner';
+    const destinationFacility = partner?.organizationName || partner?.name || 'Recycling Plant';
+    const donorOrg = data.donorOrg || data.donorName || 'Hospitality Partner';
 
-    transaction.set(newWasteRef, {
+    const newWastePayload: Record<string, any> = {
       sourceListingId: listing.id,
       donorId: data.donorId,
-      donorOrg: data.donorOrg,
+      donorOrg,
       donorPhone: data.donorPhone || '',
-      foodName: data.foodName,
+      foodName: data.foodName || 'Organic Waste Batch',
       category: wasteCat,
       quantityKg: wasteQty,
-      location: data.location,
-      destinationFacility: partner.organizationName || 'Recycling Plant',
-      partnerId: partner.uid,
-      partnerName: partner.organizationName || partner.name,
-      partnerPhone: partner.phone || '',
+      location: data.location || 'Donor Facility',
+      destinationFacility,
+      partnerId: partnerUid,
+      partnerName,
+      partnerOrg: partner?.organizationName || partnerName,
+      partnerPhone: partner?.phone || '',
+      partnerType: partner?.recyclerType || 'biogas_plant',
       status: 'collection_requested',
       pickupDeadline: data.pickupDeadline || '',
       prepDate: data.prepDate || '',
       prepTime: data.prepTime || '',
       storageCondition: data.storageCondition || 'room_temp',
-      foodCondition: data.foodCondition,
       imageUrl: data.imageUrl || '',
-      notes: notes || `Collection requested by ${partner.organizationName}`,
+      notes: notes || `Collection requested by ${partnerName}`,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+
+    if (data.foodCondition) {
+      newWastePayload.foodCondition = data.foodCondition;
+    }
+
+    transaction.set(newWasteRef, newWastePayload);
 
     return newWasteRef.id;
   });
@@ -341,7 +397,12 @@ export async function claimWasteCollection(
 ): Promise<void> {
   if (!isFirebaseConfigured || !db) throw new Error('Firestore is not configured');
 
-  if (partner.role !== 'waste_partner' && partner.role !== 'admin') {
+  const partnerUid = partner?.uid || auth?.currentUser?.uid;
+  if (!partnerUid) {
+    throw new Error('Authentication required. Please sign in with your recycler credentials.');
+  }
+
+  if (partner?.role !== 'waste_partner' && partner?.role !== 'admin') {
     throw new Error('Only authorized waste recycling partners can request organic waste collections.');
   }
 
@@ -349,27 +410,40 @@ export async function claimWasteCollection(
 
   await runTransaction(db, async (transaction) => {
     const snap = await transaction.get(ref);
-    if (!snap.exists()) throw new Error('Waste record not found');
+    if (!snap.exists()) throw new Error('Waste record not found.');
 
     const data = snap.data() as WasteCollection;
-    if (data.partnerId && data.partnerId !== partner.uid && data.status !== 'pending') {
+    if (data.status === 'processed' || data.status === 'completed') {
+      throw new Error('This waste batch has already been collected and processed.');
+    }
+    if (data.partnerId && data.partnerId !== partnerUid && data.status !== 'pending' && data.status !== 'available') {
       throw new Error('This waste collection has already been claimed by another recycling facility.');
     }
+    if (data.partnerId === partnerUid && data.status === 'collection_requested') {
+      throw new Error('Your facility has already requested collection for this waste batch.');
+    }
 
-    transaction.update(ref, {
-      partnerId: partner.uid,
-      partnerName: partner.organizationName || partner.name,
-      partnerPhone: partner.phone || '',
-      destinationFacility: partner.organizationName,
+    const partnerName = partner?.organizationName || partner?.name || 'Recycling Partner';
+    const destinationFacility = partner?.organizationName || partner?.name || 'Recycling Plant';
+
+    const updatePayload: Record<string, any> = {
+      partnerId: partnerUid,
+      partnerName,
+      partnerOrg: partner?.organizationName || partnerName,
+      partnerPhone: partner?.phone || '',
+      partnerType: partner?.recyclerType || 'biogas_plant',
+      destinationFacility,
       status: 'collection_requested',
       notes: notes || data.notes || '',
       updatedAt: serverTimestamp(),
-    });
+    };
+
+    transaction.update(ref, updatePayload);
   });
 }
 
 // Update Collection Lifecycle Workflow
-// Available → Collection Requested → Accepted → Collected → Processing → Processed
+// Available → Collection Requested → Accepted / Rejected → Collected → Processing → Processed
 export async function updateWasteCollectionWorkflow(
   collectionId: string,
   updates: {
@@ -386,7 +460,7 @@ export async function updateWasteCollectionWorkflow(
 
   await runTransaction(db, async (transaction) => {
     const snap = await transaction.get(ref);
-    if (!snap.exists()) throw new Error('Waste record not found');
+    if (!snap.exists()) throw new Error('Waste record not found.');
 
     const data = snap.data() as WasteCollection;
     const isPartner = data.partnerId === currentUserId;
@@ -396,9 +470,29 @@ export async function updateWasteCollectionWorkflow(
       throw new Error('Not authorized to update this collection record.');
     }
 
-    // Prevent completed or cancelled records from being reactivated
+    // Role-specific action validation:
+    // Only the hotel (donor) can accept or reject collection requests
+    if (updates.status === 'accepted' || updates.status === 'rejected') {
+      if (!isDonor) {
+        throw new Error('Only the hotel that owns this listing can accept or reject collection requests.');
+      }
+    }
+
+    // Only the assigned recycling partner can mark collected or advance processing
+    if (updates.status === 'collected' || updates.status === 'processing' || updates.status === 'processed') {
+      if (!isPartner && !isDonor) {
+        throw new Error('Only the assigned recycling partner can update collection and processing progress.');
+      }
+    }
+
+    // Prevent duplicate status updates
+    if (data.status === updates.status) {
+      throw new Error(`This collection record is already in "${updates.status.replace('_', ' ')}" status.`);
+    }
+
+    // Prevent completed or processed records from being reactivated or re-collected
     if (data.status === 'processed' || data.status === 'completed') {
-      throw new Error('Completed and processed waste records cannot be reactivated.');
+      throw new Error('Completed and processed waste records are finalized and cannot be reactivated or re-collected.');
     }
 
     const payload: Record<string, any> = {
@@ -408,6 +502,30 @@ export async function updateWasteCollectionWorkflow(
 
     if (updates.notes) {
       payload.notes = updates.notes;
+    }
+
+    // When status is 'accepted'
+    if (updates.status === 'accepted') {
+      payload.acceptedAt = serverTimestamp();
+    }
+
+    // When status is 'rejected', restore food listing if applicable
+    if (updates.status === 'rejected') {
+      payload.rejectedAt = serverTimestamp();
+      if (data.sourceListingId) {
+        const listingRef = doc(db!, 'foodListings', data.sourceListingId);
+        const listingSnap = await transaction.get(listingRef);
+        if (listingSnap.exists()) {
+          const lData = listingSnap.data() as FoodListing;
+          const isExp = isListingExpired(lData);
+          const restoredStatus = isExp ? 'expired' : 'available';
+          transaction.update(listingRef, {
+            remainingQuantityKg: data.quantityKg,
+            status: restoredStatus,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
     }
 
     // When status is 'collected', record actual weighed kilograms
@@ -420,21 +538,23 @@ export async function updateWasteCollectionWorkflow(
       payload.collectedAt = serverTimestamp();
     }
 
-    // When status is 'processed', record conversion method
+    // When status is 'processed', record conversion method and seal completion
     if (updates.status === 'processed') {
       payload.processingMethod = updates.processingMethod || 'Biogas / Composting Conversion';
       payload.processedAt = serverTimestamp();
     }
 
-    // If cancelled, release if possible
+    // If cancelled, release food listing back to circulation
     if (updates.status === 'cancelled') {
       if (data.sourceListingId) {
         const listingRef = doc(db!, 'foodListings', data.sourceListingId);
         const listingSnap = await transaction.get(listingRef);
         if (listingSnap.exists()) {
+          const lData = listingSnap.data() as FoodListing;
+          const isExp = isListingExpired(lData);
           transaction.update(listingRef, {
             remainingQuantityKg: data.quantityKg,
-            status: 'available',
+            status: isExp ? 'expired' : 'available',
             updatedAt: serverTimestamp(),
           });
         }

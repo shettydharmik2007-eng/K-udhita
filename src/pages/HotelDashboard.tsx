@@ -13,6 +13,10 @@ import {
   parsePickupDeadlineMs,
   isListingExpired,
 } from '../services/foodService';
+import {
+  getWasteCollections,
+  updateWasteCollectionWorkflow,
+} from '../services/wasteService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
 import type {
@@ -20,6 +24,7 @@ import type {
   FoodRequest,
   FoodRequestStatus,
   WasteCategory,
+  WasteCollection,
 } from '../types';
 import {
   Building2,
@@ -39,6 +44,7 @@ import {
   HeartHandshake,
   X,
   AlertTriangle,
+  Truck,
 } from 'lucide-react';
 
 interface Props {
@@ -68,9 +74,11 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
 
   const [listings, setListings] = useState<FoodListing[]>([]);
   const [requests, setRequests] = useState<FoodRequest[]>([]);
+  const [wasteCollections, setWasteCollections] = useState<WasteCollection[]>([]);
   const [loading, setLoading] = useState(isFirebaseConfigured && !!currentUser);
   const [refreshing, setRefreshing] = useState(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const [updatingWasteId, setUpdatingWasteId] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(Date.now()), 60000);
@@ -111,12 +119,14 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
       return;
     }
     try {
-      const [listingsData, requestsData] = await Promise.all([
+      const [listingsData, requestsData, wasteData] = await Promise.all([
         getFoodListings({ donorId: currentUser.uid }),
         getFoodRequests({ donorId: currentUser.uid }),
+        getWasteCollections({ donorId: currentUser.uid }),
       ]);
       setListings(listingsData);
       setRequests(requestsData);
+      setWasteCollections(wasteData);
     } catch (err: any) {
       console.error('Failed to load hotel dashboard data:', err);
       showNotification('error', 'Data Load Error', err.message || 'Could not fetch hotel records');
@@ -139,7 +149,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
       where('donorId', '==', currentUser.uid)
     );
 
-    const unsubscribe = onSnapshot(
+    const unsubscribeReq = onSnapshot(
       reqQuery,
       (snapshot) => {
         const liveRequests: FoodRequest[] = snapshot.docs.map((d) => ({
@@ -158,8 +168,34 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
       }
     );
 
+    // 3. Real-time Firestore subscription for donor's waste collection requests
+    const wasteQuery = query(
+      collection(db, 'wasteCollections'),
+      where('donorId', '==', currentUser.uid)
+    );
+
+    const unsubscribeWaste = onSnapshot(
+      wasteQuery,
+      (snapshot) => {
+        const liveWaste: WasteCollection[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<WasteCollection, 'id'>),
+        }));
+        liveWaste.sort((a, b) => {
+          const tA = a.createdAt?.toDate?.()?.getTime?.() || new Date(a.createdAt).getTime() || 0;
+          const tB = b.createdAt?.toDate?.()?.getTime?.() || new Date(b.createdAt).getTime() || 0;
+          return tB - tA;
+        });
+        setWasteCollections(liveWaste);
+      },
+      (err) => {
+        console.warn('Real-time donor waste collections sync warning:', err);
+      }
+    );
+
     return () => {
-      unsubscribe();
+      unsubscribeReq();
+      unsubscribeWaste();
     };
   }, [currentUser, loadData]);
 
@@ -246,6 +282,37 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
       await loadData();
     } finally {
       setUpdatingRequestId(null);
+    }
+  };
+
+  // Waste collection request status management (Accept or Reject collection requests)
+  const handleUpdateWasteCollectionStatus = async (
+    collectionId: string,
+    newStatus: 'accepted' | 'rejected'
+  ) => {
+    if (!currentUser) return;
+    if (updatingWasteId) return; // Prevent concurrent or duplicate actions
+
+    setUpdatingWasteId(collectionId);
+
+    try {
+      await updateWasteCollectionWorkflow(
+        collectionId,
+        { status: newStatus },
+        currentUser.uid
+      );
+      const actionMsg =
+        newStatus === 'accepted'
+          ? 'Recycling collection request accepted! Partner notified for pickup.'
+          : 'Recycling collection request rejected.';
+      showNotification('success', 'Status Updated', actionMsg);
+      await loadData();
+    } catch (err: any) {
+      console.error('Failed to update waste collection status:', err);
+      showNotification('error', 'Action Failed', err.message || 'Failed to update collection request status');
+      await loadData();
+    } finally {
+      setUpdatingWasteId(null);
     }
   };
 
@@ -371,6 +438,35 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
   const awaitingCollectionCount =
     activeReservations.length + listings.filter((l) => l.status === 'reserved').length;
 
+  const pendingWasteRequests = useMemo(
+    () => wasteCollections.filter((w) => w.status === 'collection_requested'),
+    [wasteCollections]
+  );
+
+  const activeWasteCollections = useMemo(
+    () =>
+      wasteCollections.filter(
+        (w) =>
+          w.status === 'collection_requested' ||
+          w.status === 'accepted' ||
+          w.status === 'collected' ||
+          w.status === 'processing'
+      ),
+    [wasteCollections]
+  );
+
+  const historyWasteCollections = useMemo(
+    () =>
+      wasteCollections.filter(
+        (w) =>
+          w.status === 'processed' ||
+          w.status === 'completed' ||
+          w.status === 'rejected' ||
+          w.status === 'cancelled'
+      ),
+    [wasteCollections]
+  );
+
   // Filter listings by tab & search query
   const filteredListings = listings.filter((item) => {
     const isOverdue = isListingExpired(item, currentTime) && item.status === 'available';
@@ -385,7 +481,12 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
     }
     else if (activeTab === 'overdue') matchesTab = isOverdue || item.status === 'overdue' || item.foodCondition === 'requires_review';
     else if (activeTab === 'completed') matchesTab = item.status === 'completed';
-    else if (activeTab === 'transferred_to_waste') matchesTab = item.status === 'transferred_to_waste';
+    else if (activeTab === 'transferred_to_waste') {
+      const hasWasteRecord = wasteCollections.some(
+        (w) => w.sourceListingId === item.id && w.status !== 'cancelled' && w.status !== 'rejected'
+      );
+      matchesTab = item.status === 'transferred_to_waste' || hasWasteRecord;
+    }
 
     const matchesSearch =
       !searchQuery.trim() ||
@@ -498,6 +599,33 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
         </div>
       </div>
 
+      {/* Pending Waste Requests Attention Banner */}
+      {pendingWasteRequests.length > 0 && (
+        <div className="alert alert-warning my-6 flex items-center justify-between p-4 bg-amber-50 border border-amber-300 rounded-xl">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="text-amber-600 shrink-0" size={22} />
+            <div>
+              <strong className="text-amber-900 text-sm">
+                {pendingWasteRequests.length} Waste Collection Request{pendingWasteRequests.length > 1 ? 's' : ''} Awaiting Approval:
+              </strong>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Certified recycling partners have requested surplus or expired food batches for bio-conversion.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary whitespace-nowrap text-xs"
+            onClick={() => {
+              setActiveTab('transferred_to_waste');
+              window.scrollTo({ top: 400, behavior: 'smooth' });
+            }}
+          >
+            Review & Respond
+          </button>
+        </div>
+      )}
+
       {/* Main Listings Section */}
       <div className="dashboard-section mt-8">
         <div className="section-header-flex items-center justify-between mb-4">
@@ -593,7 +721,7 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
           >
             <span>Routed to Waste</span>
             <span className="badge-pill-count">
-              {listings.filter((l) => l.status === 'transferred_to_waste').length}
+              {listings.filter((l) => l.status === 'transferred_to_waste').length + activeWasteCollections.length}
             </span>
           </button>
         </div>
@@ -722,6 +850,158 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                               )}
                             </button>
                           </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Prominently render Waste Collection Requests when Routed to Waste tab is active */}
+        {activeTab === 'transferred_to_waste' && (
+          <div className="mb-8 p-5 bg-white border-2 border-emerald-600/30 shadow-md rounded-2xl animate-fade-in-up">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
+                  <Recycle size={22} className="text-emerald" />
+                  <span>Waste Partner Organic Recycling Requests</span>
+                </h3>
+                <p className="text-sm text-slate-600 mt-0.5">
+                  Review and accept or reject collection requests from certified bio-composting and biogas recycling partners.
+                </p>
+              </div>
+              <span className="badge-pill-count text-sm px-3 py-1 bg-emerald-100 text-emerald-800 font-bold">
+                {activeWasteCollections.length} Collection Records
+              </span>
+            </div>
+
+            {activeWasteCollections.length === 0 ? (
+              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                <p className="text-slate-600 font-medium">
+                  No active collection requests from waste partners right now. When a certified recycler requests to collect surplus or expired batches, their requests will appear here with Accept and Reject buttons.
+                </p>
+              </div>
+            ) : (
+              <div className="requests-table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Food Item</th>
+                      <th>Waste Partner</th>
+                      <th>Remaining / Requested Qty</th>
+                      <th>Request Date</th>
+                      <th>Status</th>
+                      <th>Hotel Decision / Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeWasteCollections.map((w) => (
+                      <tr key={w.id}>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            {w.imageUrl ? (
+                              <img
+                                src={w.imageUrl}
+                                alt={w.foodName}
+                                className="w-10 h-10 object-cover rounded shadow-sm flex-shrink-0"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-lg flex-shrink-0">
+                                ♻️
+                              </div>
+                            )}
+                            <div>
+                              <strong>{w.foodName}</strong>
+                              <div className="text-muted text-xs">
+                                Category: {w.category?.replace('_', ' ')}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div>
+                            <strong>{w.partnerOrg || w.partnerName || 'Certified Recycler'}</strong>
+                            <div className="text-muted text-xs">
+                              {w.partnerName} {w.partnerPhone ? `• ${w.partnerPhone}` : ''}
+                            </div>
+                            {w.partnerType && (
+                              <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                {w.partnerType.replace('_', ' ')}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <span className="badge-qty font-bold text-slate-900">{w.quantityKg} kg</span>
+                          {w.actualCollectedKg ? (
+                            <small className="d-block text-emerald-700 font-semibold">
+                              Weighed: {w.actualCollectedKg} kg
+                            </small>
+                          ) : null}
+                        </td>
+                        <td>
+                          <span className="text-xs text-slate-700">
+                            {formatTimestamp(w.createdAt)}
+                          </span>
+                        </td>
+                        <td>
+                          <StatusBadge status={w.status} type="waste" />
+                        </td>
+                        <td>
+                          {w.status === 'collection_requested' ? (
+                            <div className="action-button-group flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-success flex items-center gap-1 font-bold shadow-xs"
+                                disabled={updatingWasteId === w.id}
+                                onClick={() => handleUpdateWasteCollectionStatus(w.id, 'accepted')}
+                                title="Accept collection request from recycling partner"
+                              >
+                                {updatingWasteId === w.id ? (
+                                  <span className="spinner-small" />
+                                ) : (
+                                  <CheckCircle size={14} />
+                                )}
+                                <span>Accept</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-outline-danger flex items-center gap-1 font-bold"
+                                disabled={updatingWasteId === w.id}
+                                onClick={() => handleUpdateWasteCollectionStatus(w.id, 'rejected')}
+                                title="Decline collection request"
+                              >
+                                {updatingWasteId === w.id ? (
+                                  <span className="spinner-small" />
+                                ) : (
+                                  <XCircle size={14} />
+                                )}
+                                <span>Reject</span>
+                              </button>
+                            </div>
+                          ) : w.status === 'accepted' ? (
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1.5 rounded-lg border border-emerald-200">
+                              <CheckCircle2 size={14} className="text-emerald" />
+                              <span>Accepted • Awaiting Pickup</span>
+                            </div>
+                          ) : w.status === 'collected' ? (
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-blue-800 bg-blue-50 px-2.5 py-1.5 rounded-lg border border-blue-200">
+                              <Truck size={14} className="text-blue-600" />
+                              <span>Collected by Recycler</span>
+                            </div>
+                          ) : w.status === 'processing' ? (
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-amber-800 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                              <RefreshCw size={14} className="text-amber-600 spin-icon" />
+                              <span>In Bio-Conversion</span>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted">
+                              {w.status.replace('_', ' ')}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -955,6 +1235,76 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                       );
                     })()}
 
+                    {/* Active Waste Recycling Requests on this listing */}
+                    {(() => {
+                      const itemWaste = wasteCollections.filter(
+                        (w) =>
+                          w.sourceListingId === item.id &&
+                          w.status !== 'cancelled' &&
+                          w.status !== 'rejected' &&
+                          w.status !== 'processed' &&
+                          w.status !== 'completed'
+                      );
+                      if (itemWaste.length === 0) return null;
+                      return (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 my-2">
+                          <div className="text-xs font-bold text-amber-900 flex items-center justify-between mb-1.5">
+                            <span className="flex items-center gap-1">
+                              <Recycle size={13} className="text-emerald-700" />
+                              <span>Recycling Partner Request</span>
+                            </span>
+                            <span className="text-[11px] font-semibold text-amber-800">
+                              {itemWaste.reduce((s, w) => s + w.quantityKg, 0)} kg total
+                            </span>
+                          </div>
+                          {itemWaste.map((w) => (
+                            <div
+                              key={w.id}
+                              className="flex items-center justify-between text-xs py-1.5 border-t border-amber-100 first:border-0"
+                            >
+                              <div className="truncate mr-2">
+                                <span className="font-bold text-slate-900">
+                                  {w.partnerOrg || w.partnerName || 'Recycler'}
+                                </span>
+                                <span className="text-slate-600 font-semibold ml-1">
+                                  ({w.quantityKg} kg)
+                                </span>
+                                <div className="text-[11px] text-muted">
+                                  Status: <strong className="capitalize text-slate-700">{w.status.replace('_', ' ')}</strong>
+                                </div>
+                              </div>
+                              {w.status === 'collection_requested' ? (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    className="btn btn-xs btn-success font-bold flex items-center gap-1 shadow-xs"
+                                    disabled={updatingWasteId === w.id}
+                                    onClick={() => handleUpdateWasteCollectionStatus(w.id, 'accepted')}
+                                    title="Accept collection request"
+                                  >
+                                    <CheckCircle size={12} /> Accept
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-xs btn-outline-danger font-bold flex items-center gap-1 shadow-xs"
+                                    disabled={updatingWasteId === w.id}
+                                    onClick={() => handleUpdateWasteCollectionStatus(w.id, 'rejected')}
+                                    title="Reject collection request"
+                                  >
+                                    <XCircle size={12} /> Reject
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-xs font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                                  {w.status === 'accepted' ? 'Accepted' : w.status.replace('_', ' ')}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
                     {/* Action Buttons (Requirement 11) */}
                     <div className="listing-card-actions mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
                       {/* Edit Button */}
@@ -1150,6 +1500,158 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
         )}
       </div>
 
+      {/* Section 1B: Waste Partner Collection Requests (Requirement 2 & 3) */}
+      <div className="dashboard-section mt-12">
+        <div className="section-header-flex">
+          <div>
+            <h2 className="section-title flex items-center gap-2">
+              <Recycle size={20} className="text-emerald" />
+              <span>Waste Partner Collection Requests</span>
+            </h2>
+            <p className="section-desc">
+              Review and accept or reject collection requests from certified bio-composting and biogas recycling partners.
+            </p>
+          </div>
+          {pendingWasteRequests.length > 0 && (
+            <span className="badge-pill-count text-sm px-3 py-1 bg-amber-100 text-amber-900 font-bold">
+              {pendingWasteRequests.length} Pending Approval
+            </span>
+          )}
+        </div>
+
+        {activeWasteCollections.length === 0 ? (
+          <div className="empty-sub-card">
+            <p>
+              No active collection requests from organic waste partners right now. When a recycling partner requests to collect surplus or expired food, it will appear here with Accept and Reject buttons.
+            </p>
+          </div>
+        ) : (
+          <div className="requests-table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Food Item</th>
+                  <th>Waste Partner</th>
+                  <th>Remaining / Requested Qty</th>
+                  <th>Request Date</th>
+                  <th>Status</th>
+                  <th>Hotel Decision / Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeWasteCollections.map((w) => (
+                  <tr key={w.id}>
+                    <td>
+                      <div className="flex items-center gap-2">
+                        {w.imageUrl ? (
+                          <img
+                            src={w.imageUrl}
+                            alt={w.foodName}
+                            className="w-10 h-10 object-cover rounded shadow-sm flex-shrink-0"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-lg flex-shrink-0">
+                            ♻️
+                          </div>
+                        )}
+                        <div>
+                          <strong>{w.foodName}</strong>
+                          <div className="text-muted text-xs">
+                            Category: {w.category?.replace('_', ' ')}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div>
+                        <strong>{w.partnerOrg || w.partnerName || 'Certified Recycler'}</strong>
+                        <div className="text-muted text-xs">
+                          {w.partnerName} {w.partnerPhone ? `• ${w.partnerPhone}` : ''}
+                        </div>
+                        {w.partnerType && (
+                          <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                            {w.partnerType.replace('_', ' ')}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="badge-qty font-bold text-slate-900">{w.quantityKg} kg</span>
+                      {w.actualCollectedKg ? (
+                        <small className="d-block text-emerald-700 font-semibold">
+                          Weighed: {w.actualCollectedKg} kg
+                        </small>
+                      ) : null}
+                    </td>
+                    <td>
+                      <span className="text-xs text-slate-700">
+                        {formatTimestamp(w.createdAt)}
+                      </span>
+                    </td>
+                    <td>
+                      <StatusBadge status={w.status} type="waste" />
+                    </td>
+                    <td>
+                      {w.status === 'collection_requested' ? (
+                        <div className="action-button-group flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-success flex items-center gap-1 font-bold shadow-xs"
+                            disabled={updatingWasteId === w.id}
+                            onClick={() => handleUpdateWasteCollectionStatus(w.id, 'accepted')}
+                            title="Accept collection request from recycling partner"
+                          >
+                            {updatingWasteId === w.id ? (
+                              <span className="spinner-small" />
+                            ) : (
+                              <CheckCircle size={14} />
+                            )}
+                            <span>Accept</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-danger flex items-center gap-1 font-bold"
+                            disabled={updatingWasteId === w.id}
+                            onClick={() => handleUpdateWasteCollectionStatus(w.id, 'rejected')}
+                            title="Reject collection request"
+                          >
+                            {updatingWasteId === w.id ? (
+                              <span className="spinner-small" />
+                            ) : (
+                              <XCircle size={14} />
+                            )}
+                            <span>Reject</span>
+                          </button>
+                        </div>
+                      ) : w.status === 'accepted' ? (
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1.5 rounded-lg border border-emerald-200">
+                          <CheckCircle2 size={14} className="text-emerald" />
+                          <span>Accepted • Awaiting Pickup</span>
+                        </div>
+                      ) : w.status === 'collected' ? (
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-blue-800 bg-blue-50 px-2.5 py-1.5 rounded-lg border border-blue-200">
+                          <Truck size={14} className="text-blue-600" />
+                          <span>Collected by Recycler</span>
+                        </div>
+                      ) : w.status === 'processing' ? (
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-amber-800 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                          <RefreshCw size={14} className="text-amber-600 spin-icon" />
+                          <span>In Bio-Conversion</span>
+                        </div>
+                      ) : (
+                        <div className="text-xs text-muted">
+                          {w.status.replace('_', ' ')}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* Section 2: Pickup History / Completed Pickups (Requirement 4) */}
       <div className="dashboard-section mt-12">
         <div className="section-header-flex">
@@ -1232,6 +1734,84 @@ export const HotelDashboard: React.FC<Props> = ({ onNavigate, onEditListing }) =
                   ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {historyWasteCollections.length > 0 && (
+          <div className="mt-8 pt-6 border-t border-slate-200">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 mb-3">
+              <Recycle size={18} className="text-emerald-700" />
+              <span>Organic Recycling & Circular Repurposing Log</span>
+            </h3>
+            <div className="requests-table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Food Item</th>
+                    <th>Certified Recycler</th>
+                    <th>Quantity (kg)</th>
+                    <th>Conversion Method</th>
+                    <th>Request Date</th>
+                    <th>Processed / Concluded Date</th>
+                    <th>Final Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyWasteCollections.map((w) => (
+                    <tr key={w.id}>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          {w.imageUrl ? (
+                            <img
+                              src={w.imageUrl}
+                              alt={w.foodName}
+                              className="w-10 h-10 object-cover rounded shadow-sm flex-shrink-0"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-lg flex-shrink-0">
+                              ♻️
+                            </div>
+                          )}
+                          <strong>{w.foodName}</strong>
+                        </div>
+                      </td>
+                      <td>
+                        <div>
+                          <strong>{w.partnerOrg || w.partnerName || 'Recycler'}</strong>
+                          <div className="text-muted text-xs">
+                            {w.partnerName} {w.partnerPhone ? `• ${w.partnerPhone}` : ''}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="badge-qty font-bold text-slate-900">
+                          {w.actualCollectedKg || w.quantityKg} kg
+                        </span>
+                      </td>
+                      <td>
+                        <span className="text-xs text-slate-700">
+                          {w.processingMethod || 'Organic Bio-Compost / Biogas'}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="text-xs text-muted">
+                          {formatTimestamp(w.createdAt)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="text-xs font-semibold text-emerald-800 flex items-center gap-1">
+                          <CheckCircle2 size={13} className="text-emerald" />
+                          {formatTimestamp(w.processedAt || w.rejectedAt || w.updatedAt)}
+                        </span>
+                      </td>
+                      <td>
+                        <StatusBadge status={w.status} type="waste" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </div>

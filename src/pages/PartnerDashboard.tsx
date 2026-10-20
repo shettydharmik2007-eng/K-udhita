@@ -392,13 +392,21 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
 
   const activeCollections = useMemo(() => {
     return myAssignedCollections.filter(
-      (w) => w.status !== 'processed' && w.status !== 'completed' && w.status !== 'cancelled'
+      (w) =>
+        w.status !== 'processed' &&
+        w.status !== 'completed' &&
+        w.status !== 'cancelled' &&
+        w.status !== 'rejected'
     );
   }, [myAssignedCollections]);
 
   const historyCollections = useMemo(() => {
     return myAssignedCollections.filter(
-      (w) => w.status === 'processed' || w.status === 'completed' || w.status === 'cancelled'
+      (w) =>
+        w.status === 'processed' ||
+        w.status === 'completed' ||
+        w.status === 'cancelled' ||
+        w.status === 'rejected'
     );
   }, [myAssignedCollections]);
 

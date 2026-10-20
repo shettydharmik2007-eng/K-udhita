@@ -151,7 +151,8 @@ export type WasteCollectionStatus =
   | 'processing'
   | 'processed'
   | 'completed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'rejected';
 
 export interface WasteCollection {
   id: string;
@@ -168,7 +169,9 @@ export interface WasteCollection {
   destinationFacility: string;
   partnerId?: string;
   partnerName?: string;
+  partnerOrg?: string;
   partnerPhone?: string;
+  partnerType?: RecyclerType;
   status: WasteCollectionStatus;
   notes?: string;
 
@@ -182,6 +185,8 @@ export interface WasteCollection {
 
   createdAt: any;
   updatedAt?: any;
+  acceptedAt?: any;
+  rejectedAt?: any;
   collectedAt?: any;
   processedAt?: any;
 }
