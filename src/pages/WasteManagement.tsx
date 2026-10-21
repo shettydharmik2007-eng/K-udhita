@@ -25,7 +25,7 @@ interface Props {
 }
 
 export const WasteManagement: React.FC<Props> = ({ onNavigate }) => {
-  const { currentUser, userProfile, isWastePartner } = useAuth();
+  const { currentUser, userProfile, isWastePartner, isAdmin } = useAuth();
   const { showNotification } = useNotification();
 
   const [wasteList, setWasteList] = useState<WasteCollection[]>([]);
@@ -44,41 +44,35 @@ export const WasteManagement: React.FC<Props> = ({ onNavigate }) => {
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const loadWaste = async () => {
-    if (!isFirebaseConfigured) {
+  const loadWaste = React.useCallback(async () => {
+    if (!isFirebaseConfigured || !currentUser) {
       setLoading(false);
       return;
     }
     try {
-      const data = await getWasteCollections();
+      let data: WasteCollection[] = [];
+      if (isAdmin) {
+        // Administrators have full permission to audit the complete registry
+        data = await getWasteCollections();
+      } else if (isWastePartner) {
+        // Recycling partners view dispatches assigned to their facility
+        data = await getWasteCollections({ partnerId: currentUser.uid });
+      } else {
+        // Donors and hospitality partners view their own logged waste batches
+        data = await getWasteCollections({ donorId: currentUser.uid });
+      }
       setWasteList(data);
     } catch (err: any) {
       console.error('Failed to load waste collections:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentUser, isAdmin, isWastePartner]);
 
   useEffect(() => {
     if (!isFirebaseConfigured) return;
-    let ignore = false;
-    getWasteCollections()
-      .then((data) => {
-        if (!ignore) {
-          setWasteList(data);
-          setLoading(false);
-        }
-      })
-      .catch((err: any) => {
-        if (!ignore) {
-          console.error('Failed to load waste collections:', err);
-          setLoading(false);
-        }
-      });
-    return () => {
-      ignore = true;
-    };
-  }, []);
+    loadWaste();
+  }, [loadWaste]);
 
   const handleCreateWaste = async (e: React.FormEvent) => {
     e.preventDefault();

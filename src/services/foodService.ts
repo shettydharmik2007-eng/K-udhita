@@ -579,8 +579,10 @@ export async function getFoodListings(filters?: {
   const listingsCol = collection(db, 'foodListings');
   let q;
 
-  if (filters?.donorId) {
-    q = query(listingsCol, where('donorId', '==', filters.donorId));
+  const validDonorId = filters?.donorId && typeof filters.donorId === 'string' && filters.donorId.trim() !== '';
+
+  if (validDonorId) {
+    q = query(listingsCol, where('donorId', '==', filters!.donorId!.trim()));
   } else {
     q = query(listingsCol);
   }
@@ -834,7 +836,7 @@ export async function requestFood(input: RequestFoodInput): Promise<string> {
   return result;
 }
 
-export async function getFoodRequests(filters: {
+export async function getFoodRequests(filters?: {
   donorId?: string;
   requesterId?: string;
   listingId?: string;
@@ -844,12 +846,16 @@ export async function getFoodRequests(filters: {
   const requestsCol = collection(db, 'foodRequests');
   let q;
 
-  if (filters.donorId) {
-    q = query(requestsCol, where('donorId', '==', filters.donorId));
-  } else if (filters.requesterId) {
-    q = query(requestsCol, where('requesterId', '==', filters.requesterId));
-  } else if (filters.listingId) {
-    q = query(requestsCol, where('listingId', '==', filters.listingId));
+  const validDonorId = filters?.donorId && typeof filters.donorId === 'string' && filters.donorId.trim() !== '';
+  const validRequesterId = filters?.requesterId && typeof filters.requesterId === 'string' && filters.requesterId.trim() !== '';
+  const validListingId = filters?.listingId && typeof filters.listingId === 'string' && filters.listingId.trim() !== '';
+
+  if (validDonorId) {
+    q = query(requestsCol, where('donorId', '==', filters!.donorId!.trim()));
+  } else if (validRequesterId) {
+    q = query(requestsCol, where('requesterId', '==', filters!.requesterId!.trim()));
+  } else if (validListingId) {
+    q = query(requestsCol, where('listingId', '==', filters!.listingId!.trim()));
   } else {
     q = query(requestsCol);
   }

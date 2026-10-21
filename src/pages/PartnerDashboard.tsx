@@ -193,18 +193,17 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     }
 
     try {
-      // 1. Fetch available waste from both wasteCollections & unsuitable foodListings
-      const availableData = await getAvailableWasteForRecyclers();
+      // Fetch available waste from both wasteCollections & unsuitable foodListings
+      const availableData = await getAvailableWasteForRecyclers(userProfile?.role);
       setWasteRecords(availableData.wasteRecords);
       setUnsuitableListings(availableData.unsuitableListings);
     } catch (err: any) {
-      console.error('[Recycler Dashboard] Data load failed:', err);
-      showNotification('error', 'Sync Failed', err.message || 'Could not load waste records');
+      console.warn(`[Recycler Dashboard] Operation "dashboard.loadData" NOTICE: error.code = "${err?.code || 'unknown'}" | message = "${err?.message || ''}"`);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentUser, showNotification]);
+  }, [currentUser, userProfile?.role]);
 
   useEffect(() => {
     if (!isFirebaseConfigured || !currentUser) {
@@ -214,7 +213,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     let ignore = false;
 
     const fetchWaste = () => {
-      getAvailableWasteForRecyclers()
+      getAvailableWasteForRecyclers(userProfile?.role)
         .then((availableData) => {
           if (!ignore) {
             setWasteRecords(availableData.wasteRecords);
@@ -224,7 +223,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
         })
         .catch((err: any) => {
           if (!ignore) {
-            console.error('[Recycler Dashboard] Data load failed:', err);
+            console.warn(`[Recycler Dashboard] Operation "dashboard.fetchWaste" NOTICE: error.code = "${err?.code || 'unknown'}" | message = "${err?.message || ''}"`);
             setLoading(false);
           }
         });
@@ -237,7 +236,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
       ignore = true;
       clearInterval(interval);
     };
-  }, [currentUser]);
+  }, [currentUser, userProfile?.role]);
 
   const handleManualRefresh = () => {
     setRefreshing(true);
@@ -320,7 +319,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
 
     // 2. Unassigned Waste Collection records
     wasteRecords
-      .filter((w) => w.status === 'pending' && !w.partnerId)
+      .filter((w) => (w.status === 'pending' || w.status === 'available') && (!w.partnerId || w.partnerId === ''))
       .forEach((record) => {
         list.push({
           id: `record_${record.id}`,
@@ -465,7 +464,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Action: Submit Collection Request (Requirement 4)
+  // Action: Submit Collection Request or Accept Unassigned Order
   const handleConfirmCollectionRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || !userProfile) {
@@ -475,7 +474,7 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     }
 
     if (!isWastePartner && userProfile.role !== 'admin') {
-      showNotification('warning', 'Recycler Access Only', 'Waste collections can only be requested by registered Bio-Processing and Organic Waste Recyclers.');
+      showNotification('warning', 'Recycler Access Only', 'Waste collections can only be processed by registered Bio-Processing and Organic Waste Recyclers.');
       return;
     }
 
@@ -484,35 +483,83 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
     setSubmittingRequest(true);
     try {
       if (selectedItemForDetails.isListing && selectedItemForDetails.listing) {
-        // Request from hotel listing marked not_suitable
+        // Request from hotel listing marked not_suitable or expired
         await requestCollectionFromListing(
           selectedItemForDetails.listing,
           userProfile,
           collectionNotes
         );
+        showNotification(
+          'success',
+          'Collection Requested!',
+          'Your pickup request has been dispatched to the hotel management.'
+        );
       } else if (selectedItemForDetails.record) {
-        // Claim existing unassigned waste record
+        // Accept and claim unassigned waste collection record
         await claimWasteCollection(
           selectedItemForDetails.record.id,
           userProfile,
-          collectionNotes
+          collectionNotes,
+          'accepted'
+        );
+        showNotification(
+          'success',
+          'Collection Accepted!',
+          'Collection order accepted! You can now proceed to dispatch your fleet for pickup.'
         );
       }
 
-      showNotification(
-        'success',
-        'Collection Requested!',
-        'Your pickup request has been dispatched to the hotel management.'
-      );
       setDetailsModalOpen(false);
       setSelectedItemForDetails(null);
       await loadData();
       setActiveTab('active');
+      if (!selectedItemForDetails.isListing) {
+        setActiveSubTab('accepted');
+      }
     } catch (err: any) {
-      console.error('[Recycler Dashboard] Request failed:', err);
-      showNotification('error', 'Request Failed', err.message || 'Could not request waste collection');
+      console.error(`[Recycler Dashboard] Operation "requestCollection" FAILED: error.code = "${err?.code || 'unknown'}" | message = "${err?.message || ''}"`);
+      showNotification('error', 'Action Failed', err.message || 'Could not process waste collection');
     } finally {
       setSubmittingRequest(false);
+    }
+  };
+
+  const [acceptingCollectionId, setAcceptingCollectionId] = useState<string | null>(null);
+
+  // Action: Direct Accept Collection from card
+  const handleAcceptCollection = async (record: WasteCollection) => {
+    if (!currentUser || !userProfile) {
+      showNotification('warning', 'Sign In Required', 'Please sign in with your recycler credentials.');
+      onNavigate('login');
+      return;
+    }
+
+    if (!isWastePartner && userProfile.role !== 'admin') {
+      showNotification('warning', 'Recycler Access Only', 'Collections can only be accepted by registered recycling partners.');
+      return;
+    }
+
+    setAcceptingCollectionId(record.id);
+    try {
+      await claimWasteCollection(
+        record.id,
+        userProfile,
+        undefined,
+        'accepted'
+      );
+      showNotification(
+        'success',
+        'Collection Accepted!',
+        `Successfully accepted collection order for ${record.quantityKg} kg from ${record.donorOrg}.`
+      );
+      await loadData();
+      setActiveTab('active');
+      setActiveSubTab('accepted');
+    } catch (err: any) {
+      console.error(`[Recycler Dashboard] Operation "acceptCollection" FAILED: error.code = "${err?.code || 'unknown'}" | message = "${err?.message || ''}"`);
+      showNotification('error', 'Accept Failed', err.message || 'Could not accept collection order');
+    } finally {
+      setAcceptingCollectionId(null);
     }
   };
 
@@ -1051,18 +1098,32 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                 <form onSubmit={handleConfirmCollectionRequest} className="flex flex-col gap-4">
                   <div className="flex items-center gap-2.5 pb-3 border-b border-slate-100">
                     <div className="p-2 rounded-lg bg-teal-50 text-teal-700 shrink-0">
-                      <Truck size={20} />
+                      {!selectedItemForDetails.isListing && selectedItemForDetails.record ? (
+                        <CheckCircle2 size={20} />
+                      ) : (
+                        <Truck size={20} />
+                      )}
                     </div>
                     <div>
-                      <h2 className="text-lg font-bold text-slate-900">Dispatch Request</h2>
-                      <span className="text-xs text-muted">Coordinate logistics & pickup</span>
+                      <h2 className="text-lg font-bold text-slate-900">
+                        {!selectedItemForDetails.isListing && selectedItemForDetails.record
+                          ? 'Accept Collection Request'
+                          : 'Dispatch Request'}
+                      </h2>
+                      <span className="text-xs text-muted">
+                        {!selectedItemForDetails.isListing && selectedItemForDetails.record
+                          ? 'Confirm assignment & schedule logistics pickup'
+                          : 'Coordinate logistics & pickup'}
+                      </span>
                     </div>
                   </div>
 
                   <div className="p-3 rounded-lg bg-teal-50/70 border border-teal-200/80 text-xs text-teal-900 flex items-start gap-2">
                     <Info size={16} className="text-teal-700 shrink-0 mt-0.5" />
                     <span>
-                      Dispatches an immediate logistics collection order to <strong>{donorOrg}</strong> for <strong>{quantityKg} kg</strong> of organic waste material.
+                      {!selectedItemForDetails.isListing && selectedItemForDetails.record
+                        ? <>Accepts this organic waste collection order from <strong>{donorOrg}</strong> for <strong>{quantityKg} kg</strong> into your active operational queue.</>
+                        : <>Dispatches an immediate logistics collection order to <strong>{donorOrg}</strong> for <strong>{quantityKg} kg</strong> of organic waste material.</>}
                     </span>
                   </div>
 
@@ -1105,12 +1166,21 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                     {submittingRequest ? (
                       <>
                         <div className="spinner-small" />
-                        <span>Submitting Request...</span>
+                        <span>{!selectedItemForDetails.isListing && selectedItemForDetails.record ? 'Accepting Order...' : 'Submitting Request...'}</span>
                       </>
                     ) : (
                       <>
-                        <Truck size={16} />
-                        <span>Confirm Collection Request</span>
+                        {!selectedItemForDetails.isListing && selectedItemForDetails.record ? (
+                          <>
+                            <CheckCircle2 size={16} />
+                            <span>Accept Collection Request</span>
+                          </>
+                        ) : (
+                          <>
+                            <Truck size={16} />
+                            <span>Confirm Collection Request</span>
+                          </>
+                        )}
                       </>
                     )}
                   </button>
@@ -1553,13 +1623,30 @@ export const PartnerDashboard: React.FC<Props> = ({ onNavigate }) => {
                         >
                           View Details
                         </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-primary flex-1"
-                          onClick={() => handleOpenDetails(item)}
-                        >
-                          <Truck size={14} /> Request Collection
-                        </button>
+                        {!item.isListing && item.record ? (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-success flex-1 flex items-center justify-center gap-1.5 font-bold"
+                            onClick={() => handleAcceptCollection(item.record!)}
+                            disabled={acceptingCollectionId === item.record.id}
+                          >
+                            {acceptingCollectionId === item.record.id ? (
+                              <span className="spinner-small" />
+                            ) : (
+                              <CheckCircle2 size={14} />
+                            )}
+                            <span>Accept Collection</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-primary flex-1 flex items-center justify-center gap-1.5 font-bold"
+                            onClick={() => handleOpenDetails(item)}
+                          >
+                            <Truck size={14} />
+                            <span>Request Collection</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

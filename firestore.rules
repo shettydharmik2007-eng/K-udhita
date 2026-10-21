@@ -15,14 +15,34 @@ service cloud.firestore {
       return role in ['donor', 'requester', 'waste_partner', 'admin'];
     }
 
+    function userDocExists() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function getUserRole() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function hasRole(role) {
+      return userDocExists() && getUserRole() == role;
+    }
+
+    function isDonor() {
+      return hasRole('donor');
+    }
+
+    function isRequester() {
+      return hasRole('requester');
+    }
+
+    function isWastePartner() {
+      return hasRole('waste_partner');
     }
 
     function isAdmin() {
       return isAuthenticated() && (
         (request.auth.token != null && request.auth.token.admin == true) ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserRole() == 'admin')
+        hasRole('admin')
       );
     }
 
@@ -49,13 +69,12 @@ service cloud.firestore {
       let data = request.resource.data;
       return (isOwner(userId) || isAdmin())
         && data.uid == userId
-        && isValidRole(data.role)
         && hasValidUserFields()
-        && (!('uid' in resource.data) || data.uid == resource.data.uid);
+        && (!('uid' in resource.data) || data.uid == resource.data.uid)
+        && (isAdmin() || data.role == resource.data.role);
     }
 
     // Users collection
-    // Authenticated users can create, update, and read ONLY their own profile; admins can manage profiles
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isValidUserProfileCreate(userId);
@@ -64,18 +83,8 @@ service cloud.firestore {
     }
 
     // Food Listings collection
-    // Authenticated users can view listings:
-    // - Donors can view all their listings
-    // - Requesters / community can view active food surplus ('available', 'reserved')
-    // - Waste partners can view expired food ('expired') or food unsuitable for donation ('not_suitable')
-    // - Admins have full access
     match /foodListings/{listingId} {
-      allow read: if isAuthenticated() && (
-        resource.data.donorId == request.auth.uid ||
-        resource.data.status in ['available', 'reserved', 'expired', 'transferred_to_waste'] ||
-        resource.data.foodCondition == 'not_suitable' ||
-        isAdmin()
-      );
+      allow read: if isAuthenticated();
 
       allow create: if isAuthenticated()
         && (request.resource.data.donorId == request.auth.uid || isAdmin())
@@ -85,15 +94,55 @@ service cloud.firestore {
         && request.resource.data.remainingQuantityKg is number
         && request.resource.data.remainingQuantityKg == request.resource.data.initialQuantityKg;
 
-      // Update Case 1: Listing owner or admin updating listing
-      // Update Case 2: Atomic transaction updating remaining quantity and status during claim, pickup, or recycling
+      // Update Case 1: Donor owner or admin updating listing fields (donorId immutable)
+      // Update Case 2: Requester reserving surplus or restoring cancelled claim
+      // Update Case 3: Waste partner transferring to waste or restoring cancelled collection
       allow update: if isAuthenticated() && (
         (
           (resource.data.donorId == request.auth.uid || isAdmin()) &&
           request.resource.data.donorId == resource.data.donorId
-        ) || (
+        ) ||
+        (
+          (isRequester() || isAdmin()) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingQuantityKg', 'status', 'updatedAt']) &&
-          request.resource.data.status in ['available', 'reserved', 'completed', 'expired', 'transferred_to_waste']
+          request.resource.data.remainingQuantityKg is number &&
+          request.resource.data.remainingQuantityKg >= 0 &&
+          request.resource.data.remainingQuantityKg <= resource.data.initialQuantityKg &&
+          (
+            (
+              request.resource.data.remainingQuantityKg < resource.data.remainingQuantityKg &&
+              (
+                (request.resource.data.remainingQuantityKg == 0 && request.resource.data.status == 'completed') ||
+                (request.resource.data.remainingQuantityKg > 0 && request.resource.data.status == 'reserved')
+              ) &&
+              resource.data.foodCondition != 'not_suitable'
+            ) ||
+            (
+              request.resource.data.remainingQuantityKg > resource.data.remainingQuantityKg &&
+              resource.data.status in ['reserved', 'completed'] &&
+              request.resource.data.status in ['available', 'expired']
+            )
+          )
+        ) ||
+        (
+          (isWastePartner() || isAdmin()) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingQuantityKg', 'status', 'updatedAt']) &&
+          (
+            (
+              resource.data.status in ['available', 'reserved', 'expired'] &&
+              resource.data.remainingQuantityKg > 0 &&
+              request.resource.data.remainingQuantityKg == 0 &&
+              request.resource.data.status == 'transferred_to_waste' &&
+              (resource.data.foodCondition == 'not_suitable' || resource.data.status == 'expired')
+            ) ||
+            (
+              resource.data.status == 'transferred_to_waste' &&
+              request.resource.data.status in ['available', 'expired'] &&
+              request.resource.data.remainingQuantityKg is number &&
+              request.resource.data.remainingQuantityKg > 0 &&
+              request.resource.data.remainingQuantityKg <= resource.data.initialQuantityKg
+            )
+          )
         )
       );
 
@@ -101,7 +150,6 @@ service cloud.firestore {
     }
 
     // Food Requests collection
-    // Requesters can view their own requests; donors can view requests for their listings; admins can view all
     match /foodRequests/{requestId} {
       allow read: if isAuthenticated() && (
         resource.data.requesterId == request.auth.uid ||
@@ -115,7 +163,6 @@ service cloud.firestore {
         && request.resource.data.requestedQuantityKg is number
         && request.resource.data.requestedQuantityKg > 0;
 
-      // Status updates by either donor (accept/reject/pickup confirmation) or requester (cancel/complete) or admin
       allow update: if isAuthenticated()
         && (resource.data.requesterId == request.auth.uid || resource.data.donorId == request.auth.uid || isAdmin())
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'pickedUpAt'])
@@ -129,43 +176,150 @@ service cloud.firestore {
     }
 
     // Waste Collections collection
-    // Authorized waste partners, donors, and admins can view, claim, and update
     match /wasteCollections/{collectionId} {
-      allow read: if isAuthenticated();
-
-      // Allowed creates:
-      // 1. Donor creating a waste collection record
-      // 2. Waste partner creating a collection request from an unsuitable or expired surplus listing
-      // 3. Admin
-      allow create: if isAuthenticated() && (
-        request.resource.data.donorId == request.auth.uid ||
-        request.resource.data.partnerId == request.auth.uid ||
-        isAdmin()
-      );
-
-      // Allowed updates:
-      // 1. Donor managing their own waste record
-      // 2. Waste partner requesting / claiming a pending collection
-      // 3. Assigned waste partner updating status, actual weight, notes, and processing details
-      // 4. Admin
-      allow update: if isAuthenticated() && (
-        resource.data.donorId == request.auth.uid ||
-        (
-          resource.data.status in ['pending', 'available'] &&
-          request.resource.data.partnerId == request.auth.uid &&
-          (!('donorId' in resource.data) || request.resource.data.donorId == resource.data.donorId)
-        ) || (
-          resource.data.partnerId == request.auth.uid &&
-          (!('donorId' in resource.data) || request.resource.data.donorId == resource.data.donorId)
-        ) ||
-        isAdmin()
-      );
-
-      allow delete: if isAuthenticated() && (
+      // Read access:
+      // - Donor who owns the batch
+      // - Assigned partner
+      // - Unassigned batches ('available' | 'pending') restricted exclusively to waste partners & admins
+      allow read: if isAuthenticated() && (
         resource.data.donorId == request.auth.uid ||
         resource.data.partnerId == request.auth.uid ||
+        (resource.data.status in ['available', 'pending'] && (isWastePartner() || isAdmin())) ||
         isAdmin()
       );
+
+      // Create access:
+      // 1. Donor creating an unassigned batch
+      // 2. Recycler requesting collection from an eligible, non-transferred food listing
+      // 3. Admin creating valid collection record
+      allow create: if isAuthenticated() && (
+        (
+          (isDonor() || isAdmin()) &&
+          request.resource.data.donorId == request.auth.uid &&
+          request.resource.data.status in ['available', 'pending'] &&
+          request.resource.data.quantityKg is number &&
+          request.resource.data.quantityKg > 0
+        ) ||
+        (
+          (isWastePartner() || isAdmin()) &&
+          request.resource.data.partnerId == request.auth.uid &&
+          request.resource.data.status == 'collection_requested' &&
+          request.resource.data.sourceListingId is string &&
+          request.resource.data.quantityKg is number &&
+          request.resource.data.quantityKg > 0 &&
+          exists(/databases/$(database)/documents/foodListings/$(request.resource.data.sourceListingId)) &&
+          request.resource.data.donorId == get(/databases/$(database)/documents/foodListings/$(request.resource.data.sourceListingId)).data.donorId &&
+          request.resource.data.quantityKg == get(/databases/$(database)/documents/foodListings/$(request.resource.data.sourceListingId)).data.remainingQuantityKg &&
+          get(/databases/$(database)/documents/foodListings/$(request.resource.data.sourceListingId)).data.status in ['available', 'reserved', 'expired'] &&
+          (
+            get(/databases/$(database)/documents/foodListings/$(request.resource.data.sourceListingId)).data.foodCondition == 'not_suitable' ||
+            get(/databases/$(database)/documents/foodListings/$(request.resource.data.sourceListingId)).data.status == 'expired'
+          )
+        ) ||
+        (
+          isAdmin() &&
+          request.resource.data.quantityKg is number &&
+          request.resource.data.quantityKg > 0 &&
+          request.resource.data.status in ['available', 'pending', 'collection_requested', 'accepted']
+        )
+      );
+
+      // Update access:
+      // Immutability preserved across all updates:
+      // donorId, quantityKg, createdAt, and sourceListingId cannot be changed.
+      // partnerId cannot be changed once assigned.
+      allow update: if isAuthenticated() && (
+        (
+          // Subcase 1: Donor Update
+          resource.data.donorId == request.auth.uid &&
+          request.resource.data.donorId == resource.data.donorId &&
+          request.resource.data.quantityKg == resource.data.quantityKg &&
+          (!('partnerId' in resource.data) || request.resource.data.partnerId == resource.data.partnerId) &&
+          (!('sourceListingId' in resource.data) || request.resource.data.sourceListingId == resource.data.sourceListingId) &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt', 'rejectedAt', 'updatedAt', 'notes']) &&
+          (
+            (resource.data.status == 'collection_requested' && request.resource.data.status in ['accepted', 'rejected', 'cancelled']) ||
+            (resource.data.status in ['available', 'pending'] && request.resource.data.status in ['available', 'pending', 'cancelled'])
+          )
+        ) ||
+        (
+          // Subcase 2: Recycler Claiming Unassigned Record
+          (isWastePartner() || isAdmin()) &&
+          resource.data.status in ['available', 'pending'] &&
+          (!('partnerId' in resource.data) || resource.data.partnerId == null || resource.data.partnerId == '') &&
+          request.resource.data.partnerId == request.auth.uid &&
+          request.resource.data.donorId == resource.data.donorId &&
+          request.resource.data.quantityKg == resource.data.quantityKg &&
+          (!('sourceListingId' in resource.data) || request.resource.data.sourceListingId == resource.data.sourceListingId) &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+          request.resource.data.status in ['accepted', 'collection_requested'] &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'partnerId', 'partnerName', 'partnerOrg', 'partnerPhone', 'partnerType',
+            'destinationFacility', 'status', 'notes', 'updatedAt', 'acceptedAt'
+          ])
+        ) ||
+        (
+          // Subcase 3: Assigned Recycler Lifecycle Progression
+          (isWastePartner() || isAdmin()) &&
+          resource.data.partnerId == request.auth.uid &&
+          request.resource.data.partnerId == resource.data.partnerId &&
+          request.resource.data.donorId == resource.data.donorId &&
+          request.resource.data.quantityKg == resource.data.quantityKg &&
+          (!('sourceListingId' in resource.data) || request.resource.data.sourceListingId == resource.data.sourceListingId) &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+          (
+            // accepted -> collected
+            (
+              resource.data.status == 'accepted' &&
+              request.resource.data.status == 'collected' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'actualCollectedKg', 'collectedAt', 'updatedAt', 'notes']) &&
+              request.resource.data.actualCollectedKg is number &&
+              request.resource.data.actualCollectedKg > 0
+            ) ||
+            // collected -> processing
+            (
+              resource.data.status == 'collected' &&
+              request.resource.data.status == 'processing' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'notes'])
+            ) ||
+            // collected or processing -> processed
+            (
+              resource.data.status in ['collected', 'processing'] &&
+              request.resource.data.status == 'processed' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'processingMethod', 'processedAt', 'updatedAt', 'notes']) &&
+              request.resource.data.processingMethod is string &&
+              request.resource.data.processingMethod.size() > 0
+            ) ||
+            // cancellation
+            (
+              resource.data.status in ['collection_requested', 'accepted'] &&
+              request.resource.data.status == 'cancelled' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'notes'])
+            )
+          )
+        ) ||
+        (
+          // Subcase 4: Administrative emergency correction (strict structural invariants enforced)
+          isAdmin() &&
+          request.resource.data.quantityKg is number &&
+          request.resource.data.quantityKg > 0 &&
+          request.resource.data.donorId == resource.data.donorId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+          request.resource.data.status in [
+            'available', 'pending', 'collection_requested', 'accepted',
+            'collected', 'processing', 'processed', 'completed', 'cancelled', 'rejected'
+          ] &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'notes', 'destinationFacility', 'partnerId', 'partnerName',
+            'partnerOrg', 'partnerPhone', 'partnerType', 'actualCollectedKg',
+            'processingMethod', 'acceptedAt', 'rejectedAt', 'collectedAt', 'processedAt', 'updatedAt'
+          ])
+        )
+      );
+
+      // Deletion is strictly Admin-only
+      allow delete: if isAdmin();
     }
   }
 }
